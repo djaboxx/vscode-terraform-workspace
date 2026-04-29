@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import Database from 'better-sqlite3';
 
 /** Max bytes to store per individual .tf file */
@@ -74,7 +75,6 @@ export class TerraformFileCache implements vscode.Disposable {
 
   constructor(storagePath: string) {
     // Ensure the storage directory exists
-    const fs = require('fs') as typeof import('fs');
     fs.mkdirSync(storagePath, { recursive: true });
 
     this.db = new Database(path.join(storagePath, 'tf_cache.db'));
