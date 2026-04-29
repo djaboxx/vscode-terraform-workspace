@@ -1,0 +1,526 @@
+{
+  "name": "terraform-workspace",
+  "displayName": "Terraform Workspace",
+  "description": "AI-powered Terraform workspace manager backed by GitHub Actions and HappyPathway infrastructure patterns",
+  "version": "0.1.0",
+  "publisher": "HappyPathway",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/djaboxx/vscode-terraform-workspace"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "AI",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "terraform",
+    "opentofu",
+    "iac",
+    "github-actions",
+    "ai",
+    "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "terraform.assistant",
+        "fullName": "Terraform Workspace",
+        "name": "terraform",
+        "description": "AI-powered Terraform workspace manager. Generate code, run plans/applies via GitHub Actions, manage secrets and environments.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "generate",
+            "description": "Generate new Terraform HCL from a description"
+          },
+          {
+            "name": "modify",
+            "description": "Modify existing Terraform files via diff preview"
+          },
+          {
+            "name": "plan",
+            "description": "Trigger a Terraform plan via GitHub Actions"
+          },
+          {
+            "name": "apply",
+            "description": "Trigger a Terraform apply via GitHub Actions"
+          },
+          {
+            "name": "explain",
+            "description": "Explain the current Terraform configuration"
+          },
+          {
+            "name": "workspace",
+            "description": "List or select Terraform workspaces (GitHub Environments)"
+          },
+          {
+            "name": "bootstrap",
+            "description": "Bootstrap a new repository with Terraform workspace patterns"
+          },
+          {
+            "name": "varset",
+            "description": "Manage variable sets for an organization"
+          },
+          {
+            "name": "search",
+            "description": "Search GitHub org repos for Terraform code examples and documentation"
+          }
+        ]
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "terraform_run_plan",
+        "displayName": "Run Terraform Plan",
+        "modelDescription": "Triggers a terraform plan via GitHub Actions workflow_dispatch on the specified workspace (GitHub Environment). Returns the run URL and streams logs.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "workspace": {
+              "type": "string",
+              "description": "The GitHub Environment name (Terraform workspace) to plan. Defaults to current active workspace."
+            },
+            "workingDirectory": {
+              "type": "string",
+              "description": "The working directory within the repo containing the Terraform configuration."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_run_apply",
+        "displayName": "Run Terraform Apply",
+        "modelDescription": "Triggers a terraform apply via GitHub Actions on the specified workspace. Requires confirmation. Returns the run URL.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "workspace"
+          ],
+          "properties": {
+            "workspace": {
+              "type": "string",
+              "description": "The GitHub Environment name to apply."
+            },
+            "workingDirectory": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_get_state",
+        "displayName": "Get Terraform State",
+        "modelDescription": "Fetches and parses the Terraform state from the last successful run artifact. Returns a resource summary.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "workspace": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_list_workspaces",
+        "displayName": "List Terraform Workspaces",
+        "modelDescription": "Lists all GitHub Environments configured for the current repository, which correspond to Terraform workspaces.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "terraform_list_variables",
+        "displayName": "List Terraform Variables",
+        "modelDescription": "Lists all GitHub Actions variables and secrets (non-sensitive names only) for the current workspace or organization.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "workspace": {
+              "type": "string"
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "environment",
+                "repository",
+                "organization"
+              ],
+              "description": "Scope to list variables from."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_set_variable",
+        "displayName": "Set Terraform Variable",
+        "modelDescription": "Sets a GitHub Actions variable or secret in the specified scope. Sensitive values are stored as encrypted secrets.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "key",
+            "value",
+            "sensitive"
+          ],
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            },
+            "sensitive": {
+              "type": "boolean",
+              "description": "If true, stored as a GitHub Secret. If false, stored as a GitHub Variable."
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "terraform",
+                "env"
+              ],
+              "description": "Whether this is a TF_VAR_ or plain env var."
+            },
+            "workspace": {
+              "type": "string"
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "environment",
+                "repository",
+                "organization"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_generate_code",
+        "displayName": "Generate Terraform Code",
+        "modelDescription": "Generates Terraform HCL from a natural language description, using detected provider versions and HappyPathway module patterns as context.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "description"
+          ],
+          "properties": {
+            "description": {
+              "type": "string",
+              "description": "What infrastructure to create or modify."
+            },
+            "targetFile": {
+              "type": "string",
+              "description": "Target .tf file path. If omitted, creates a new file."
+            },
+            "useModules": {
+              "type": "boolean",
+              "description": "Prefer HappyPathway Terraform modules from the registry."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_bootstrap_workspace",
+        "displayName": "Bootstrap Terraform Workspace",
+        "modelDescription": "Sets up a GitHub repository with Terraform environments, GitHub Actions workflows, branch protection, and S3 backend config using HappyPathway patterns.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "repoName",
+            "repoOrg",
+            "environments"
+          ],
+          "properties": {
+            "repoName": {
+              "type": "string"
+            },
+            "repoOrg": {
+              "type": "string"
+            },
+            "environments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string"
+                  },
+                  "enforceReviewers": {
+                    "type": "boolean"
+                  },
+                  "reviewerTeams": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "cacheBucket": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "stateBucket": {
+              "type": "string"
+            },
+            "stateRegion": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "terraform-workspace",
+          "title": "Terraform Workspace",
+          "icon": "images/terraform-activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "terraform-workspace": [
+        {
+          "id": "terraform.workspaces",
+          "name": "Workspaces",
+          "contextualTitle": "Terraform Workspaces"
+        },
+        {
+          "id": "terraform.variables",
+          "name": "Variables & Secrets",
+          "contextualTitle": "Terraform Variables"
+        },
+        {
+          "id": "terraform.runs",
+          "name": "Run History",
+          "contextualTitle": "Terraform Runs"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "terraform.selectFolder",
+        "title": "Select Workspace Folder",
+        "icon": "$(folder)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.refreshWorkspaces",
+        "title": "Refresh Workspaces",
+        "icon": "$(refresh)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.selectWorkspace",
+        "title": "Select Workspace",
+        "icon": "$(check)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.runPlan",
+        "title": "Run Plan",
+        "icon": "$(play)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.runApply",
+        "title": "Run Apply",
+        "icon": "$(cloud-upload)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.openRunLogs",
+        "title": "Open Run Logs",
+        "icon": "$(output)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.addVariable",
+        "title": "Add Variable",
+        "icon": "$(add)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.addSecret",
+        "title": "Add Secret",
+        "icon": "$(key)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.deleteVariable",
+        "title": "Delete Variable",
+        "icon": "$(trash)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.bootstrapWorkspace",
+        "title": "Bootstrap New Workspace",
+        "icon": "$(wand)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.openInGitHub",
+        "title": "Open in GitHub",
+        "icon": "$(github)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.configureGithubApp",
+        "title": "Configure GitHub App",
+        "icon": "$(settings-gear)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.configureWorkspace",
+        "title": "Configure Workspace",
+        "icon": "$(edit)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.syncWorkflows",
+        "title": "Sync Workflows",
+        "icon": "$(sync)",
+        "category": "Terraform"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "terraform.refreshWorkspaces",
+          "when": "view == terraform.workspaces",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.bootstrapWorkspace",
+          "when": "view == terraform.workspaces",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.configureWorkspace",
+          "when": "view == terraform.workspaces",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.syncWorkflows",
+          "when": "view == terraform.workspaces",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.addVariable",
+          "when": "view == terraform.variables",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.addSecret",
+          "when": "view == terraform.variables",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "terraform.selectWorkspace",
+          "when": "viewItem == workspace",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.runPlan",
+          "when": "viewItem == workspace",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.runApply",
+          "when": "viewItem == workspace",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.openRunLogs",
+          "when": "viewItem == run",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.deleteVariable",
+          "when": "viewItem == variable",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.openInGitHub",
+          "when": "viewItem =~ /workspace|run/",
+          "group": "context"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Terraform Workspace",
+      "properties": {
+        "terraformWorkspace.repoOrg": {
+          "type": "string",
+          "description": "Default GitHub organization for new workspaces",
+          "default": "HappyPathway"
+        },
+        "terraformWorkspace.compositeActionOrg": {
+          "type": "string",
+          "description": "GitHub org containing composite action repos (aws-auth, gh-auth, terraform-init, etc.)",
+          "default": "HappyPathway"
+        },
+        "terraformWorkspace.defaultRunnerGroup": {
+          "type": "string",
+          "description": "Default runner group label for GitHub Actions",
+          "default": "self-hosted"
+        },
+        "terraformWorkspace.defaultStateRegion": {
+          "type": "string",
+          "description": "Default AWS region for Terraform state S3 buckets",
+          "default": "us-east-1"
+        },
+        "terraformWorkspace.preferOpenTofu": {
+          "type": "boolean",
+          "description": "Prefer OpenTofu (tofu) over Terraform CLI in generated workflows",
+          "default": true
+        },
+        "terraformWorkspace.aiModel": {
+          "type": "string",
+          "description": "Language model family to use for code generation",
+          "default": "gpt-4o"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "compile": "tsc --noEmit",
+    "lint": "eslint src --ext ts",
+    "test": "node ./test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/test-electron": "^2.3.9",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "tweetsodium": "^0.0.5"
+  }
+}
