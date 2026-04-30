@@ -4,15 +4,26 @@ import { GithubActionsClient } from './github/GithubActionsClient.js';
 import { GithubEnvironmentsClient } from './github/GithubEnvironmentsClient.js';
 import { GithubOrgsClient } from './github/GithubOrgsClient.js';
 import { GithubSearchClient } from './github/GithubSearchClient.js';
+import { GithubModuleClient } from './github/GithubModuleClient.js';
 import { WorkspaceConfigManager } from './config/WorkspaceConfigManager.js';
+import { WorkspaceConfigValidator } from './config/WorkspaceConfigValidator.js';
+import { ActionlintRunner } from './workflows/ActionlintRunner.js';
+import { DriftDetector } from './workflows/DriftDetector.js';
+import { HclDiagnosticsProvider } from './views/HclDiagnosticsProvider.js';
+import { TerraformResourceCodeLens } from './views/TerraformResourceCodeLens.js';
+import { runBackendBootstrap, runOidcTrustPolicy, runScaffoldFromTemplate } from './workflows/Scaffolders.js';
 import { WorkspacesTreeProvider, WorkspaceTreeItem } from './views/WorkspacesTreeProvider.js';
 import { VariablesTreeProvider, VariableTreeItem } from './views/VariablesTreeProvider.js';
 import { RunsTreeProvider, RunTreeItem } from './views/RunsTreeProvider.js';
 import { WorkspaceConfigPanel } from './views/WorkspaceConfigPanel.js';
+import { ModuleComposerPanel } from './views/ModuleComposerPanel.js';
 import { TerraformChatParticipant } from './chat/TerraformChatParticipant.js';
 import { registerTerraformTools } from './tools/TerraformTools.js';
 import { WorkflowGenerator } from './workflows/WorkflowGenerator.js';
 import { TerraformFileCache } from './cache/TerraformFileCache.js';
+import { RunHistoryStore } from './cache/RunHistoryStore.js';
+import { GitRemoteParser } from './auth/GitRemoteParser.js';
+import { LocalActionsScaffolder } from './workflows/LocalActionsScaffolder.js';
 import { ExtensionServices } from './services.js';
 import { TfWorkspace } from './types/index.js';
 
@@ -22,19 +33,62 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const envsClient = new GithubEnvironmentsClient(auth);
   const orgsClient = new GithubOrgsClient(auth);
   const searchClient = new GithubSearchClient(auth);
+  const moduleClient = new GithubModuleClient(auth);
   const configManager = new WorkspaceConfigManager(context);
   const tfCache = new TerraformFileCache(context.globalStorageUri.fsPath);
+  const runHistory = new RunHistoryStore(context.globalStorageUri.fsPath);
+  context.subscriptions.push({ dispose: () => runHistory.dispose() });
+  const actionsScaffolder = new LocalActionsScaffolder(context.extensionUri);
 
   // Warm the cache before anything needs it; watcher keeps it current afterwards
   tfCache.initialize();
   context.subscriptions.push(tfCache);
 
-  const services: ExtensionServices = { auth, actionsClient, envsClient, orgsClient, searchClient, configManager, tfCache };
+  const services: ExtensionServices = { auth, actionsClient, envsClient, orgsClient, searchClient, moduleClient, configManager, tfCache, actionsScaffolder };
 
   const outputChannel = vscode.window.createOutputChannel('Terraform Workspace');
   context.subscriptions.push(outputChannel);
 
+  // Telemetry shim — opt-in, gated on VS Code's global telemetry switch.
+  const { Telemetry } = await import('./services/Telemetry.js');
+  const telemetry = new Telemetry(outputChannel);
+  services.telemetry = telemetry;
+  telemetry.event('extension.activate', { version: context.extension?.packageJSON?.version ?? 'unknown' });
+
   context.subscriptions.push(configManager.startWatching());
+
+  const configValidator = new WorkspaceConfigValidator(context.extensionUri, configManager);
+  await configValidator.activate();
+  context.subscriptions.push(configValidator);
+
+  const actionlint = new ActionlintRunner();
+  context.subscriptions.push(actionlint);
+  services.actionlint = actionlint;
+
+  const drift = new DriftDetector(services, outputChannel);
+  context.subscriptions.push(drift);
+  services.drift = drift;
+
+  const hclDiag = new HclDiagnosticsProvider();
+  context.subscriptions.push(hclDiag);
+
+  context.subscriptions.push(
+    vscode.languages.registerCodeLensProvider({ language: 'terraform' }, new TerraformResourceCodeLens()),
+    vscode.languages.registerCodeLensProvider({ pattern: '**/*.tf' }, new TerraformResourceCodeLens()),
+  );
+
+  // Auto-regenerate workflows when the user edits .vscode/terraform-workspace.json,
+  // so dispatching a workspace doesn't 404 because the YAML on the default branch
+  // hasn't been re-synced.
+  context.subscriptions.push(
+    configManager.onDidChange(() => {
+      const auto = vscode.workspace
+        .getConfiguration('terraformWorkspace')
+        .get<boolean>('autoSyncWorkflows', true);
+      if (!auto) return;
+      void runSyncWorkflows(services, { silent: true });
+    }),
+  );
 
   // ── Status bar: active folder indicator ───────────────────────────────────
 
@@ -42,6 +96,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   folderStatusBar.command = 'terraform.selectFolder';
   folderStatusBar.tooltip = 'Terraform: click to switch workspace folder';
   context.subscriptions.push(folderStatusBar);
+
+  const lastRunStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  lastRunStatusBar.command = 'terraform.runs.focus';
+  context.subscriptions.push(lastRunStatusBar);
+
+  const refreshLastRunStatusBar = async () => {
+    try {
+      const active = await configManager.getActive();
+      if (!active) { lastRunStatusBar.hide(); return; }
+      const [owner, repo] = active.config.repo.name.split('/');
+      if (!owner || !repo) { lastRunStatusBar.hide(); return; }
+      const runs = await actionsClient.listRepoRuns(owner, repo, 1);
+      const latest = runs[0];
+      if (!latest) { lastRunStatusBar.hide(); return; }
+      const icon =
+        latest.status !== 'completed' ? '$(sync~spin)' :
+        latest.conclusion === 'success' ? '$(check)' :
+        latest.conclusion === 'neutral' ? '$(diff)' :
+        latest.conclusion === 'failure' ? '$(error)' :
+        '$(circle-slash)';
+      lastRunStatusBar.text = `${icon} ${latest.name ?? 'run'} #${latest.run_number}`;
+      lastRunStatusBar.tooltip = `${latest.status}${latest.conclusion ? ` / ${latest.conclusion}` : ''} — click to open Runs view`;
+      lastRunStatusBar.show();
+    } catch {
+      lastRunStatusBar.hide();
+    }
+  };
 
   const refreshFolderStatusBar = async () => {
     const folders = vscode.workspace.workspaceFolders ?? [];
@@ -55,12 +136,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   await refreshFolderStatusBar();
+  await refreshLastRunStatusBar();
+  // Refresh the last-run badge every minute so the user gets passive feedback
+  // without having to open the Runs view.
+  const lastRunTimer = setInterval(refreshLastRunStatusBar, 60_000);
+  context.subscriptions.push({ dispose: () => clearInterval(lastRunTimer) });
 
   // ── Tree views ─────────────────────────────────────────────────────────────
 
   const workspacesProvider = new WorkspacesTreeProvider(envsClient, configManager);
   const variablesProvider = new VariablesTreeProvider(envsClient, orgsClient, configManager);
-  const runsProvider = new RunsTreeProvider(actionsClient, configManager);
+  const runsProvider = new RunsTreeProvider(actionsClient, configManager, runHistory);
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('terraform.workspaces', workspacesProvider),
@@ -134,6 +220,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
 
+    vscode.commands.registerCommand('terraform.reviewDeployment', async (item: RunTreeItem) => {
+      const active = await configManager.getActive();
+      if (!active) { vscode.window.showWarningMessage('No workspace config found.'); return; }
+      const [owner, repo] = active.config.repo.name.split('/');
+      const runId = item?.run?.workflowRunId;
+      if (!runId) { vscode.window.showWarningMessage('Select a run from the Runs view.'); return; }
+
+      const pending = await services.actionsClient.listPendingDeployments(owner, repo, runId);
+      const approvable = pending.filter(p => p.current_user_can_approve);
+      if (approvable.length === 0) {
+        vscode.window.showInformationMessage('No pending deployments awaiting your review on this run.');
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(
+        approvable.map(p => ({ label: p.environment.name, id: p.environment.id })),
+        { canPickMany: true, placeHolder: 'Select environments to review' },
+      );
+      if (!picked || picked.length === 0) return;
+
+      const action = await vscode.window.showQuickPick(
+        [{ label: 'Approve', value: 'approved' as const }, { label: 'Reject', value: 'rejected' as const }],
+        { placeHolder: 'Approve or reject?' },
+      );
+      if (!action) return;
+
+      const comment = await vscode.window.showInputBox({ prompt: `Comment for ${action.label.toLowerCase()}` }) ?? '';
+
+      const ok = await services.actionsClient.reviewDeployments(
+        owner, repo, runId, picked.map(p => p.id), action.value, comment,
+      );
+      vscode.window.showInformationMessage(ok ? `Deployment ${action.value}.` : `Failed to ${action.value} deployment.`);
+    }),
+
     vscode.commands.registerCommand('terraform.addVariable', async () => {
       const active = await configManager.getActive();
       if (!active) {
@@ -156,8 +276,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const { repoOrg: owner, name: repo } = active.config.repo;
 
       try {
+        // Show diff against existing value (if any) and confirm.
+        const existing = await getExistingVariable(envsClient, scope, owner, repo, key, () => pickEnvironment(envsClient, owner, repo));
+        if (existing.found) {
+          const proceed = await vscode.window.showWarningMessage(
+            `Overwrite ${scope} variable "${key}"?\nWas: ${existing.value}\nNew: ${value}`,
+            { modal: true },
+            'Overwrite',
+          );
+          if (proceed !== 'Overwrite') return;
+        }
+
         if (scope === 'environment') {
-          const envName = await pickEnvironment(envsClient, owner, repo);
+          const envName = existing.envName ?? await pickEnvironment(envsClient, owner, repo);
           if (!envName) return;
           await envsClient.setEnvironmentVariable(owner, repo, envName, key, value);
         } else if (scope === 'repository') {
@@ -254,6 +385,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const active = await configManager.getActive();
       const folder = active?.folder ?? folders[0];
+      // No config yet? Offer auto-discovery before opening an empty form.
+      const existing = await configManager.read(folder);
+      if (!existing) {
+        const choice = await vscode.window.showInformationMessage(
+          'No Terraform workspace config found. Auto-discover defaults from this repo?',
+          { modal: false },
+          'Auto-discover',
+          'Open Empty Form',
+        );
+        if (choice === 'Auto-discover') {
+          await runAutoDiscovery(services, configManager, context, outputChannel);
+          return;
+        }
+      }
       await WorkspaceConfigPanel.open(folder, configManager, context);
     }),
 
@@ -282,44 +427,92 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await WorkspaceConfigPanel.open(folder, configManager, context);
     }),
 
+    vscode.commands.registerCommand('terraform.discoverDefaults', async () => {
+      await runAutoDiscovery(services, configManager, context, outputChannel);
+    }),
+
     vscode.commands.registerCommand('terraform.syncWorkflows', async () => {
-      const active = await configManager.getActive();
-      if (!active) {
-        vscode.window.showWarningMessage(
-          'No workspace config found. Run **Terraform: Configure Workspace** first.',
-        );
+      await runSyncWorkflows(services, { silent: false });
+    }),
+
+    vscode.commands.registerCommand('terraform.lintWorkflows', async () => {
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      if (folders.length === 0) {
+        vscode.window.showWarningMessage('Open a folder to lint workflows.');
         return;
       }
+      const active = await configManager.getActive();
+      const folder = active?.folder ?? folders[0];
+      await actionlint.run(folder);
+    }),
 
+    vscode.commands.registerCommand('terraform.checkDrift', async () => {
+      const drifted = await drift.checkAll();
+      if (drifted.length === 0) {
+        vscode.window.showInformationMessage('No drift detected across configured environments.');
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.scaffoldBackend', () => runBackendBootstrap()),
+    vscode.commands.registerCommand('terraform.scaffoldOidcTrust', () => runOidcTrustPolicy(auth)),
+    vscode.commands.registerCommand('terraform.scaffoldFromTemplate', () => runScaffoldFromTemplate(auth)),
+
+    vscode.commands.registerCommand('terraform.composeModules', async () => {
+      const active = await configManager.getActive();
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      const activeFolder = active?.folder ?? folders[0];
+      const vsConfig = vscode.workspace.getConfiguration('terraformWorkspace');
+      const defaultOrg = vsConfig.get<string>('repoOrg', '');
+      ModuleComposerPanel.open(moduleClient, defaultOrg, activeFolder, context);
+    }),
+
+    vscode.commands.registerCommand('terraform.diagnoseAuth', async () => {
+      const { AuthDiagnostics } = await import('./auth/AuthDiagnostics.js');
+      const diag = new AuthDiagnostics(auth, configManager);
       await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: 'Terraform: Syncing workflows…',
-          cancellable: false,
-        },
-        async progress => {
-          try {
-            const generator = new WorkflowGenerator(envsClient);
-            progress.report({ message: 'Fetching variables and secrets from GitHub…' });
-            const workflows = await generator.generateAll(active.config);
-            progress.report({ message: `Writing ${workflows.length} workflow files…` });
-            const uris = await generator.writeToWorkspace(active.folder, workflows);
-            vscode.window.showInformationMessage(
-              `Synced ${uris.length} workflow(s) to .github/workflows/`,
-              'Open Folder',
-            ).then(choice => {
-              if (choice === 'Open Folder') {
-                vscode.commands.executeCommand(
-                  'revealFileInOS',
-                  vscode.Uri.joinPath(active.folder.uri, '.github', 'workflows'),
-                );
-              }
-            });
-          } catch (err) {
-            vscode.window.showErrorMessage(`Workflow sync failed: ${String(err)}`);
+        { location: vscode.ProgressLocation.Notification, title: 'Probing GitHub auth scopes...', cancellable: true },
+        async (_progress, token) => {
+          const report = await diag.run(token);
+          const md = AuthDiagnostics.renderReport(report);
+          outputChannel.appendLine('\n' + md.replace(/\*\*/g, ''));
+          outputChannel.show(true);
+          if (report.summary === 'all_good') {
+            vscode.window.showInformationMessage('GitHub auth: all scopes reachable. See Output for details.');
+          } else {
+            vscode.window.showWarningMessage('GitHub auth: some scopes unreachable. See Output for details.');
           }
         },
       );
+    }),
+
+    vscode.commands.registerCommand('terraform.resolveVariable', async () => {
+      const active = await configManager.getActive();
+      if (!active) { vscode.window.showWarningMessage('No workspace config found.'); return; }
+      const key = await vscode.window.showInputBox({ prompt: 'Variable name to trace' });
+      if (!key) return;
+      const { repoOrg: owner, name: repo } = active.config.repo;
+      const envName = await pickEnvironment(envsClient, owner, repo);
+      const sources: string[] = [];
+      try {
+        const orgVars = await envsClient.listOrgVariables(owner);
+        if (orgVars.find((v: { name: string }) => v.name === key)) sources.push(`org:${owner}`);
+      } catch { /* scope unavailable, skip */ }
+      try {
+        const repoVars = await envsClient.listRepoVariables(owner, repo);
+        if (repoVars.find(v => v.name === key)) sources.push(`repo:${owner}/${repo}`);
+      } catch { /* scope unavailable, skip */ }
+      if (envName) {
+        try {
+          const envVars = await envsClient.listEnvironmentVariables(owner, repo, envName);
+          if (envVars.find(v => v.name === key)) sources.push(`env:${envName}`);
+        } catch { /* scope unavailable, skip */ }
+      }
+      if (sources.length === 0) {
+        vscode.window.showInformationMessage(`Variable "${key}" not found in org/repo${envName ? '/env' : ''} scopes.`);
+      } else {
+        const winner = sources[sources.length - 1];
+        vscode.window.showInformationMessage(`"${key}" defined in: ${sources.join(' → ')}. Effective source: ${winner}.`);
+      }
     }),
   );
 
@@ -330,6 +523,102 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ── Language model tools ────────────────────────────────────────────────────
 
   registerTerraformTools(context, services, outputChannel);
+
+  // ── Autonomous agent (djaboxx replacement protocol) ─────────────────────────
+
+  const { AgentMemory } = await import('./agent/AgentMemory.js');
+  const { AgentTaskQueue } = await import('./agent/AgentTaskQueue.js');
+  const { AgentRunner } = await import('./agent/AgentRunner.js');
+  const { ProactiveAgent } = await import('./agent/ProactiveAgent.js');
+  const { RepoLearner } = await import('./agent/RepoLearner.js');
+
+  const agentMemory = new AgentMemory(context.globalStorageUri.fsPath);
+  context.subscriptions.push({ dispose: () => agentMemory.close() });
+
+  const agentCfg = vscode.workspace.getConfiguration('terraformWorkspace.agent');
+  const agentOwners = agentCfg.get<string[]>('owners', []);
+  const agentLabel = agentCfg.get<string>('triggerLabel', 'agent');
+  const agentInterval = agentCfg.get<number>('pollIntervalMinutes', 10) * 60 * 1000;
+  const agentAutonomy = agentCfg.get<'observe' | 'draft-pr' | 'merge'>('autonomyLevel', 'draft-pr');
+  const agentMaxIter = agentCfg.get<number>('maxIterations', 12);
+
+  const learnerCfg = vscode.workspace.getConfiguration('terraformWorkspace.agent.learner');
+  const learnerEnabled = learnerCfg.get<boolean>('enabled', true);
+  const learnerOwners = learnerCfg.get<string[]>('owners', ['HappyPathway', 'djaboxx']);
+  const learnerTopic = learnerCfg.get<string>('topic', 'learning');
+  const learnerReposPerTick = learnerCfg.get<number>('reposPerTick', 25);
+  const learnerCommitsPerRepo = learnerCfg.get<number>('commitsPerRepo', 20);
+
+  const repoLearner = new RepoLearner(auth, agentMemory, {
+    owners: learnerOwners,
+    topic: learnerTopic,
+    reposPerTick: learnerReposPerTick,
+    commitsPerRepo: learnerCommitsPerRepo,
+  });
+
+  const agentQueue = new AgentTaskQueue(auth, agentLabel);
+  const agentRunner = new AgentRunner(agentMemory, {
+    maxIterations: agentMaxIter,
+    autonomyLevel: agentAutonomy,
+  });
+  const proactiveAgent = new ProactiveAgent(agentMemory, agentQueue, agentRunner, {
+    owners: agentOwners,
+    pollIntervalMs: agentInterval,
+    runOnFocus: agentCfg.get<boolean>('runOnFocus', true),
+    maxTasksPerTick: agentCfg.get<number>('maxTasksPerTick', 1),
+    maxIterations: agentMaxIter,
+    autonomyLevel: agentAutonomy,
+    learner: learnerEnabled ? repoLearner : undefined,
+  });
+  context.subscriptions.push(proactiveAgent);
+
+  if (agentCfg.get<boolean>('enabled', false)) {
+    proactiveAgent.start();
+  }
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('terraform.agent.start', () => {
+      proactiveAgent.start();
+      vscode.window.showInformationMessage('Terraform agent started.');
+    }),
+    vscode.commands.registerCommand('terraform.agent.stop', () => {
+      proactiveAgent.stop();
+      vscode.window.showInformationMessage('Terraform agent stopped.');
+    }),
+    vscode.commands.registerCommand('terraform.agent.runNow', async () => {
+      await proactiveAgent.forceTick();
+    }),
+    vscode.commands.registerCommand('terraform.agent.showStatus', () => {
+      proactiveAgent.showOutput();
+    }),
+    vscode.commands.registerCommand('terraform.agent.showMemory', async () => {
+      const open = agentMemory.openItems();
+      const failures = agentMemory.recentFailures(10);
+      const lines = [
+        '# Terraform Agent Memory',
+        '',
+        `## Open items (${open.length})`,
+        ...open.map(e => `- [${e.kind}] (${new Date(e.createdAt).toISOString()}) ${e.content}`),
+        '',
+        `## Recent failures (${failures.length})`,
+        ...failures.map(e => `- (${new Date(e.createdAt).toISOString()}) ${e.content}`),
+      ];
+      const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'markdown' });
+      await vscode.window.showTextDocument(doc);
+    }),
+    vscode.commands.registerCommand('terraform.agent.learnNow', async () => {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Terraform: ingesting learning repos…' },
+        async () => {
+          const result = await repoLearner.tick();
+          vscode.window.showInformationMessage(
+            `Learner scanned ${result.reposScanned} repo(s), updated ${result.reposUpdated}.` +
+            (result.errors.length ? ` (${result.errors.length} error(s) — see Output)` : ''),
+          );
+        },
+      );
+    }),
+  );
 }
 
 export function deactivate(): void {
@@ -337,6 +626,179 @@ export function deactivate(): void {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Single-flight guard for `runSyncWorkflows`. Multiple invocations while a
+ * sync is in flight are coalesced into the same promise so we don't race two
+ * concurrent writes against `.github/workflows/`.
+ */
+let syncInFlight: Promise<void> | undefined;
+
+/**
+ * Auto-discover defaults for the active folder, show the user a summary, and
+ * (with confirmation) apply them to `.vscode/terraform-workspace.json` before
+ * opening the configuration panel for review.
+ */
+async function runAutoDiscovery(
+  services: ExtensionServices,
+  configManager: WorkspaceConfigManager,
+  context: vscode.ExtensionContext,
+  outputChannel: vscode.OutputChannel,
+): Promise<void> {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    vscode.window.showWarningMessage('Open a workspace folder first.');
+    return;
+  }
+  const folder = configManager.getActiveFolder() ?? folders[0];
+
+  const { WorkspaceAutoDiscovery } = await import('./discovery/WorkspaceAutoDiscovery.js');
+  const { buildConfigFromDiscovery, summarizeDiscovery } = await import(
+    './discovery/buildConfigFromDiscovery.js'
+  );
+
+  const result = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Discovering Terraform defaults…' },
+    () => new WorkspaceAutoDiscovery({ envsClient: services.envsClient }).discover(folder),
+  );
+
+  outputChannel.appendLine('--- Auto-discovery ---');
+  outputChannel.appendLine(summarizeDiscovery(result).replace(/\*\*/g, ''));
+
+  const vsConfig = vscode.workspace.getConfiguration('terraformWorkspace');
+  const suggested = buildConfigFromDiscovery(result, {
+    compositeActionOrg: vsConfig.get<string>('compositeActionOrg', 'HappyPathway'),
+    defaultStateRegion: vsConfig.get<string>('defaultStateRegion', 'us-east-1'),
+    defaultRunnerGroup: vsConfig.get<string>('defaultRunnerGroup', 'self-hosted'),
+  });
+
+  const existing = await configManager.read(folder);
+  const summary = [
+    result.repoSlug ? `Repo: ${result.repoSlug}` : 'Repo: <not detected>',
+    `Environments: ${suggested.environments.length}`,
+    `Backend: ${suggested.stateConfig?.bucket ?? 'n/a'} (${suggested.stateConfig?.region ?? 'n/a'})`,
+    result.warnings.length ? `Warnings: ${result.warnings.length}` : null,
+  ]
+    .filter(Boolean)
+    .join(' • ');
+
+  const action = existing ? 'Merge & Open' : 'Apply & Open';
+  const choice = await vscode.window.showInformationMessage(
+    `Auto-discovery complete. ${summary}`,
+    { modal: false },
+    action,
+    'Show Details',
+    'Cancel',
+  );
+
+  if (choice === 'Cancel' || !choice) return;
+
+  if (choice === 'Show Details') {
+    const doc = await vscode.workspace.openTextDocument({
+      language: 'markdown',
+      content:
+        `# Terraform Workspace — Discovery Report\n\n${summarizeDiscovery(result)}\n\n` +
+        `## Suggested config\n\n\`\`\`json\n${JSON.stringify(suggested, null, 2)}\n\`\`\`\n`,
+    });
+    await vscode.window.showTextDocument(doc, { preview: true });
+    return;
+  }
+
+  // Merge: preserve user-set fields when they exist; otherwise use suggested.
+  const finalConfig = (existing
+    ? (mergeConfig(existing as unknown as Record<string, unknown>, suggested as unknown as Record<string, unknown>) as unknown as typeof suggested)
+    : suggested);
+  await configManager.write(folder, finalConfig);
+  await WorkspaceConfigPanel.open(folder, configManager, context);
+}
+
+/**
+ * Shallow-merge: `existing` wins for scalar fields it has set; arrays from
+ * `suggested` are used when the existing array is empty.
+ */
+function mergeConfig(
+  existing: Record<string, unknown>,
+  suggested: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...suggested };
+  for (const [key, value] of Object.entries(existing)) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      out[key] = value.length > 0 ? value : suggested[key];
+    } else if (typeof value === 'object') {
+      const sugg = suggested[key];
+      out[key] =
+        sugg && typeof sugg === 'object' && !Array.isArray(sugg)
+          ? mergeConfig(value as Record<string, unknown>, sugg as Record<string, unknown>)
+          : value;
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+async function runSyncWorkflows(
+  services: ExtensionServices,
+  opts: { silent: boolean },
+): Promise<void> {
+  if (syncInFlight) return syncInFlight;
+
+  syncInFlight = (async () => {
+    const active = await services.configManager.getActive();
+    if (!active) {
+      if (!opts.silent) {
+        vscode.window.showWarningMessage(
+          'No workspace config found. Run **Terraform: Configure Workspace** first.',
+        );
+      }
+      return;
+    }
+
+    await vscode.window.withProgress(
+      {
+        location: opts.silent
+          ? vscode.ProgressLocation.Window
+          : vscode.ProgressLocation.Notification,
+        title: 'Terraform: Syncing workflows…',
+        cancellable: false,
+      },
+      async progress => {
+        try {
+          const generator = new WorkflowGenerator(
+            services.envsClient,
+            services.actionsScaffolder,
+          );
+          progress.report({ message: 'Fetching variables and secrets from GitHub…' });
+          const workflows = await generator.generateAll(active.config);
+          progress.report({ message: `Writing ${workflows.length} workflow files…` });
+          const uris = await generator.writeToWorkspace(active.folder, workflows);
+          if (!opts.silent) {
+            vscode.window
+              .showInformationMessage(
+                `Synced ${uris.length} workflow(s) to .github/workflows/`,
+                'Open Folder',
+              )
+              .then(choice => {
+                if (choice === 'Open Folder') {
+                  vscode.commands.executeCommand(
+                    'revealFileInOS',
+                    vscode.Uri.joinPath(active.folder.uri, '.github', 'workflows'),
+                  );
+                }
+              });
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(`Workflow sync failed: ${String(err)}`);
+        }
+      },
+    );
+  })().finally(() => {
+    syncInFlight = undefined;
+  });
+
+  return syncInFlight;
+}
 
 async function triggerRun(
   type: 'plan' | 'apply',
@@ -362,10 +824,16 @@ async function triggerRun(
         progress.report({ message: 'Dispatching workflow…' });
         const before = new Date();
 
+        // workflow_dispatch requires the workflow file to exist on the dispatched
+        // ref. Only the default branch is guaranteed to have it after a sync.
+        const ref = await GitRemoteParser.getDefaultBranch(
+          (await services.configManager.getActive())?.folder.uri.fsPath,
+        );
+
         await services.actionsClient.triggerWorkflow(owner, repo, workflowFile, {
           workspace: workspace.name,
           working_directory: workspace.workingDirectory ?? '.',
-        });
+        }, ref);
 
         progress.report({ message: 'Waiting for run to start…' });
         const run = await services.actionsClient.waitForNewRun(owner, repo, workflowFile, before);
@@ -416,4 +884,38 @@ async function pickEnvironment(
 
 function isWorkspaceItem(item: WorkspaceTreeItem | RunTreeItem): item is WorkspaceTreeItem {
   return 'workspace' in item;
+}
+
+/**
+ * Looks up the current value of a variable across the chosen scope so the
+ * user sees a before/after diff before overwriting. Secrets cannot be read
+ * back from GitHub — this is variables-only.
+ */
+async function getExistingVariable(
+  envsClient: GithubEnvironmentsClient,
+  scope: string,
+  owner: string,
+  repo: string,
+  key: string,
+  pickEnv: () => Promise<string | undefined>,
+): Promise<{ found: boolean; value?: string; envName?: string }> {
+  try {
+    if (scope === 'environment') {
+      const envName = await pickEnv();
+      if (!envName) return { found: false };
+      const list = await envsClient.listEnvironmentVariables(owner, repo, envName);
+      const hit = list.find(v => v.name === key);
+      return hit ? { found: true, value: hit.value, envName } : { found: false, envName };
+    } else if (scope === 'repository') {
+      const list = await envsClient.listRepoVariables(owner, repo);
+      const hit = list.find(v => v.name === key);
+      return hit ? { found: true, value: hit.value } : { found: false };
+    } else {
+      const list = await envsClient.listOrgVariables(owner);
+      const hit = list.find(v => v.name === key);
+      return hit ? { found: true, value: hit.value } : { found: false };
+    }
+  } catch {
+    return { found: false };
+  }
 }

@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
-import * as path from 'path';
 
 interface ParsedRemote {
   hostname: string;
@@ -140,6 +139,59 @@ export class GitRemoteParser {
 
         resolve(results);
       });
+    });
+  }
+
+  /**
+   * Returns the current branch (HEAD) for the given folder, or `undefined`
+   * if it isn't a git checkout or HEAD is detached.
+   */
+  static getCurrentBranch(folderPath?: string): Promise<string | undefined> {
+    const target = folderPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!target) return Promise.resolve(undefined);
+
+    return new Promise(resolve => {
+      cp.execFile(
+        'git',
+        ['rev-parse', '--abbrev-ref', 'HEAD'],
+        { cwd: target },
+        (err, stdout) => {
+          if (err) {
+            resolve(undefined);
+            return;
+          }
+          const branch = stdout.trim();
+          resolve(branch && branch !== 'HEAD' ? branch : undefined);
+        },
+      );
+    });
+  }
+
+  /**
+   * Returns the default branch (the upstream tracked by `origin/HEAD`) for
+   * the given folder. Falls back to `main` when it cannot be determined —
+   * useful as the `ref` for a `workflow_dispatch` API call.
+   */
+  static getDefaultBranch(folderPath?: string): Promise<string> {
+    const target = folderPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!target) return Promise.resolve('main');
+
+    return new Promise(resolve => {
+      cp.execFile(
+        'git',
+        ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+        { cwd: target },
+        (err, stdout) => {
+          if (err) {
+            resolve('main');
+            return;
+          }
+          const ref = stdout.trim();
+          // ref is like "origin/main"
+          const slash = ref.indexOf('/');
+          resolve(slash >= 0 ? ref.slice(slash + 1) : 'main');
+        },
+      );
     });
   }
 }

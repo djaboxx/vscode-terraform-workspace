@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { WorkspaceConfig } from '../types/index.js';
 
 const CONFIG_FILENAME = 'terraform-workspace.json';
@@ -62,6 +61,70 @@ export class WorkspaceConfigManager {
   }
 
   /**
+   * Upserts the `terraform` server entry in `.vscode/mcp.json`.
+   * If the file already exists, it is read and the `terraform` server + its
+   * two inputs are merged in — preserving any other servers or inputs the user
+   * may have added. The inputs use VS Code's `${input:…}` substitution so TFE
+   * credentials are prompted at runtime rather than stored in plain text.
+   */
+  async writeMcpJson(folder: vscode.WorkspaceFolder): Promise<void> {
+    const mcpUri = vscode.Uri.joinPath(folder.uri, CONFIG_DIR, 'mcp.json');
+
+    // Read existing file, or start with an empty skeleton.
+    let existing: { servers?: Record<string, unknown>; inputs?: unknown[] } = {};
+    try {
+      const bytes = await vscode.workspace.fs.readFile(mcpUri);
+      existing = JSON.parse(Buffer.from(bytes).toString('utf-8'));
+    } catch {
+      // File absent or unparseable — start fresh
+      const dirUri = vscode.Uri.joinPath(folder.uri, CONFIG_DIR);
+      try {
+        await vscode.workspace.fs.createDirectory(dirUri);
+      } catch {
+        // Already exists
+      }
+    }
+
+    // Upsert the terraform server entry.
+    existing.servers = existing.servers ?? {};
+    existing.servers['terraform'] = {
+      command: 'docker',
+      args: [
+        'run', '-i', '--rm',
+        '-e', 'TFE_TOKEN=${input:tfe_token}',
+        '-e', 'TFE_ADDRESS=${input:tfe_address}',
+        'hashicorp/terraform-mcp-server:0.5.2',
+      ],
+    };
+
+    // Upsert the two inputs, replacing by id if already present.
+    const terraformInputs = [
+      {
+        type: 'promptString',
+        id: 'tfe_token',
+        description: 'Terraform API Token',
+        password: true,
+      },
+      {
+        type: 'promptString',
+        id: 'tfe_address',
+        description: 'HCP Terraform / TFE address (e.g. https://app.terraform.io)',
+      },
+    ];
+    const otherInputs = (existing.inputs ?? []).filter(
+      (i): i is Record<string, unknown> =>
+        typeof i === 'object' && i !== null &&
+        !terraformInputs.some(ti => ti.id === (i as Record<string, unknown>)['id']),
+    );
+    existing.inputs = [...otherInputs, ...terraformInputs];
+
+    await vscode.workspace.fs.writeFile(
+      mcpUri,
+      Buffer.from(JSON.stringify(existing, null, 2), 'utf-8'),
+    );
+  }
+
+  /**
    * Creates a default (stub) config for the given folder + repo slug,
    * writing it to disk. Used when the user runs "Bootstrap Workspace".
    */
@@ -110,6 +173,7 @@ export class WorkspaceConfigManager {
     };
 
     await this.write(folder, config);
+    await this.writeMcpJson(folder);
     return config;
   }
 

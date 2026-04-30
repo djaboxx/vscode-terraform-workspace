@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ExtensionServices } from '../services.js';
 import { CodeSearchResult } from '../github/GithubSearchClient.js';
+import { GitRemoteParser } from '../auth/GitRemoteParser.js';
 
 export class TerraformChatParticipant {
   static register(
@@ -30,15 +31,15 @@ export class TerraformChatParticipant {
       case 'workspace':
         return TerraformChatParticipant.handleWorkspace(stream, services);
       case 'plan':
-        return TerraformChatParticipant.handlePlan(request.prompt, stream, services, outputChannel);
+        return TerraformChatParticipant.handlePlan(request.prompt, stream, services, outputChannel, token);
       case 'apply':
-        return TerraformChatParticipant.handleApply(request.prompt, stream, services, outputChannel);
+        return TerraformChatParticipant.handleApply(request.prompt, stream, services, outputChannel, token);
       case 'bootstrap':
         return TerraformChatParticipant.handleBootstrap(stream, services);
       case 'varset':
         return TerraformChatParticipant.handleVarset(request.prompt, stream, services);
       case 'search':
-        return TerraformChatParticipant.handleSearch(request.prompt, stream, token, services);
+        return TerraformChatParticipant.handleSearch(request.prompt, stream, token, request.toolInvocationToken, services);
       default:
         return TerraformChatParticipant.handleAI(request, chatContext, stream, token, services);
     }
@@ -93,6 +94,7 @@ export class TerraformChatParticipant {
     stream: vscode.ChatResponseStream,
     services: ExtensionServices,
     outputChannel: vscode.OutputChannel,
+    token: vscode.CancellationToken,
   ): Promise<vscode.ChatResult> {
     const active = await services.configManager.getActive();
     if (!active) {
@@ -114,11 +116,13 @@ export class TerraformChatParticipant {
 
     try {
       const before = new Date();
+      const ref = await GitRemoteParser.getDefaultBranch(active.folder.uri.fsPath);
       await services.actionsClient.triggerWorkflow(
         owner,
         repo,
         `terraform-plan-${workspace}.yml`,
         { workspace, working_directory: '.' },
+        ref,
       );
 
       stream.markdown('Workflow dispatched. Waiting for run to start…\n\n');
@@ -129,11 +133,29 @@ export class TerraformChatParticipant {
         repo,
         `terraform-plan-${workspace}.yml`,
         before,
+        30000,
+        token,
       );
 
       if (run) {
-        stream.markdown(`Run started: [View logs on GitHub](${run.html_url})\n`);
+        stream.markdown(`Run started: [View logs on GitHub](${run.html_url})\n\n`);
         outputChannel.appendLine(`[plan] Run ${run.id}: ${run.html_url}`);
+
+        stream.progress('Waiting for plan to complete…');
+        try {
+          const finished = await services.actionsClient.waitForRun(
+            owner, repo, run.id, outputChannel, 5000, token,
+          );
+          stream.markdown(
+            `**Plan ${finished.conclusion ?? finished.status}** ` +
+            `(commit \`${finished.head_sha.slice(0, 7)}\`).\n\n` +
+            `[Open run on GitHub](${finished.html_url})\n`,
+          );
+        } catch (err) {
+          if (!(err instanceof vscode.CancellationError)) {
+            stream.markdown(`\n\n**Polling error:** ${String(err)}`);
+          }
+        }
       } else {
         stream.markdown('Run started (no run ID returned — check GitHub Actions).\n');
       }
@@ -151,6 +173,7 @@ export class TerraformChatParticipant {
     stream: vscode.ChatResponseStream,
     services: ExtensionServices,
     outputChannel: vscode.OutputChannel,
+    token: vscode.CancellationToken,
   ): Promise<vscode.ChatResult> {
     const active = await services.configManager.getActive();
     if (!active) {
@@ -172,11 +195,13 @@ export class TerraformChatParticipant {
 
     try {
       const before = new Date();
+      const ref = await GitRemoteParser.getDefaultBranch(active.folder.uri.fsPath);
       await services.actionsClient.triggerWorkflow(
         owner,
         repo,
         `terraform-apply-${workspace}.yml`,
         { workspace, working_directory: '.' },
+        ref,
       );
 
       const run = await services.actionsClient.waitForNewRun(
@@ -184,6 +209,8 @@ export class TerraformChatParticipant {
         repo,
         `terraform-apply-${workspace}.yml`,
         before,
+        30000,
+        token,
       );
 
       if (run) {
@@ -267,6 +294,7 @@ export class TerraformChatParticipant {
     prompt: string,
     stream: vscode.ChatResponseStream,
     token: vscode.CancellationToken,
+    _toolInvocationToken: vscode.ChatParticipantToolToken | undefined,
     services: ExtensionServices,
   ): Promise<vscode.ChatResult> {
     const query = prompt.trim();
@@ -296,7 +324,7 @@ export class TerraformChatParticipant {
 
     let results;
     try {
-      results = await services.searchClient.searchOrgCode(query, org, 10, ['extension:tf', 'extension:tfvars']);
+      results = await services.searchClient.searchOrgCode(query, org, 10, ['language:HCL']);
     } catch (err) {
       stream.markdown(`\n\n**Search error:** ${String(err)}`);
       return {};
@@ -326,7 +354,8 @@ export class TerraformChatParticipant {
     }
 
     // Pass fragments to the LLM for a synthesized, actionable response
-    const models = await vscode.lm.selectChatModels({ family: 'gpt-4o' });
+    const aiModel = vscode.workspace.getConfiguration('terraformWorkspace').get<string>('aiModel', 'gpt-4o');
+    const models = await vscode.lm.selectChatModels({ family: aiModel });
     const model = models[0];
     if (!model || token.isCancellationRequested) {
       return {};
@@ -373,12 +402,14 @@ export class TerraformChatParticipant {
     token: vscode.CancellationToken,
     services: ExtensionServices,
   ): Promise<vscode.ChatResult> {
-    const models = await vscode.lm.selectChatModels({ family: 'gpt-4o' });
+    const aiModel = vscode.workspace.getConfiguration('terraformWorkspace').get<string>('aiModel', 'gpt-4o');
+    const models = await vscode.lm.selectChatModels({ family: aiModel });
     const model = models[0];
 
     if (!model) {
       stream.markdown(
         'No language model available. Ensure GitHub Copilot Chat is installed and signed in.',
+
       );
       return {};
     }
@@ -389,7 +420,13 @@ export class TerraformChatParticipant {
       'You are a Terraform workspace assistant backed by GitHub Actions and HappyPathway infrastructure patterns.\n' +
       'You help users manage Terraform infrastructure: generating HCL code, explaining configs, managing environments, ' +
       'and using GitHub Actions for plan/apply workflows.\n' +
-      'Always use idiomatic Terraform. Prefer HappyPathway modules when available.';
+      'Always use idiomatic Terraform. Prefer HappyPathway modules when available.\n' +
+      'Tool-selection guidance:\n' +
+      '- Before asking the user for workspace config values, call `terraform_discover_workspace` ' +
+      'to auto-fill defaults from git, .tf files, workflows, and GitHub Environments.\n' +
+      '- For "where does this variable come from?" questions, use `terraform_resolve_variable`.\n' +
+      '- For "is anything out of sync?" questions, use `terraform_check_drift`.\n' +
+      '- Use `terraform_lint_workflows` after `terraform_sync_workflows` to validate generated YAML.';
 
     try {
       const active = await services.configManager.getActive();
@@ -434,10 +471,72 @@ export class TerraformChatParticipant {
 
     messages.push(vscode.LanguageModelChatMessage.User(request.prompt));
 
+    // Expose the extension's own LM tools to the chat. This lets the model
+    // actually invoke `terraform_*` tools (discover workspace, run plan,
+    // search code, lint workflows, check drift, etc.) rather than just
+    // describing what it would do.
+    const terraformTools: vscode.LanguageModelChatTool[] = vscode.lm.tools
+      .filter(t => t.name.startsWith('terraform_'))
+      .map(t => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
+
+    // Bound the tool-call loop so a misbehaving model can't spin forever.
+    const MAX_TOOL_ROUNDS = 5;
+    let round = 0;
+
     try {
-      const response = await model.sendRequest(messages, {}, token);
-      for await (const chunk of response.text) {
-        stream.markdown(chunk);
+      while (round < MAX_TOOL_ROUNDS) {
+        if (token.isCancellationRequested) break;
+        const response = await model.sendRequest(
+          messages,
+          terraformTools.length > 0 ? { tools: terraformTools } : {},
+          token,
+        );
+
+        const toolCalls: vscode.LanguageModelToolCallPart[] = [];
+        const assistantParts: (vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart)[] = [];
+
+        for await (const part of response.stream) {
+          if (part instanceof vscode.LanguageModelTextPart) {
+            stream.markdown(part.value);
+            assistantParts.push(part);
+          } else if (part instanceof vscode.LanguageModelToolCallPart) {
+            toolCalls.push(part);
+            assistantParts.push(part);
+          }
+        }
+
+        if (toolCalls.length === 0) break;
+
+        messages.push(vscode.LanguageModelChatMessage.Assistant(assistantParts));
+
+        for (const call of toolCalls) {
+          stream.markdown(`\n\n> 🔧 invoking \`${call.name}\`…\n\n`);
+          try {
+            const result = await vscode.lm.invokeTool(
+              call.name,
+              { input: call.input, toolInvocationToken: request.toolInvocationToken },
+              token,
+            );
+            messages.push(
+              vscode.LanguageModelChatMessage.User([
+                new vscode.LanguageModelToolResultPart(call.callId, result.content),
+              ]),
+            );
+          } catch (toolErr) {
+            messages.push(
+              vscode.LanguageModelChatMessage.User([
+                new vscode.LanguageModelToolResultPart(call.callId, [
+                  new vscode.LanguageModelTextPart(`Tool error: ${String(toolErr)}`),
+                ]),
+              ]),
+            );
+          }
+        }
+        round++;
       }
     } catch (err) {
       if ((err as Error).name !== 'Cancelled') {

@@ -1,8 +1,6 @@
 import * as vscode from 'vscode';
 import {
   WorkspaceConfig,
-  WorkspaceConfigEnv,
-  WorkspaceConfigRepo,
 } from '../types/index.js';
 import { WorkspaceConfigManager } from '../config/WorkspaceConfigManager.js';
 
@@ -72,7 +70,7 @@ export class WorkspaceConfigPanel {
   static async open(
     folder: vscode.WorkspaceFolder,
     manager: WorkspaceConfigManager,
-    context: vscode.ExtensionContext
+    _context: vscode.ExtensionContext
   ): Promise<WorkspaceConfigPanel> {
     const key = folder.uri.toString();
     const existing = WorkspaceConfigPanel.instances.get(key);
@@ -136,7 +134,7 @@ export class WorkspaceConfigPanel {
 
   // ─── HTML ─────────────────────────────────────────────────────────────────
 
-  private buildHtml(config: WorkspaceConfig): string {
+  private buildHtml(_config: WorkspaceConfig): string {
     // The webview uses a message-passing model:
     // 1. On ready, it posts {type:'ready'} → host sends {type:'load', config}
     // 2. The form is rendered from the config object

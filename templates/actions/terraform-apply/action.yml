@@ -1,0 +1,55 @@
+name: "Terraform Apply"
+description: |
+  Hydrates the .terraform/ cache from terraform-init and applies the exact
+  plan binary produced by terraform-plan, so what gets applied is what was
+  reviewed on the PR. No re-planning happens here.
+
+inputs:
+  workspace:
+    description: "Terraform workspace name."
+    required: false
+    default: ""
+  working_directory:
+    description: "Path containing the Terraform root module."
+    required: false
+    default: "."
+  cache_bucket:
+    description: "S3 bucket holding the .terraform cache and plan binary."
+    required: true
+  cache_key:
+    description: "S3 key prefix from terraform-init."
+    required: false
+    default: ""
+  apply_args:
+    description: "Extra args passed to `<cli> apply`."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Resolve CLI"
+      id: cli
+      shell: bash
+      run: echo "cli=${TF_CLI:-tofu}" >> "$GITHUB_OUTPUT"
+
+    - name: "Set TF_WORKSPACE"
+      if: inputs.workspace != ''
+      shell: bash
+      run: echo "TF_WORKSPACE=${{ inputs.workspace }}" >> "$GITHUB_ENV"
+
+    - name: "Hydrate .terraform + plan from cache"
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+        aws s3 cp "s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/terraform-dir.tgz" /tmp/terraform-dir.tgz
+        tar -xzf /tmp/terraform-dir.tgz
+        aws s3 cp "s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/terraform.lock.hcl" .terraform.lock.hcl 2>/dev/null || true
+        aws s3 cp "s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/tf.plan" tf.plan
+
+    - name: "Terraform Apply"
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        ${{ steps.cli.outputs.cli }} apply -input=false -auto-approve ${{ inputs.apply_args }} tf.plan

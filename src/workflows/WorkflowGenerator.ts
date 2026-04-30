@@ -11,6 +11,7 @@ import {
   GhaSecret,
   GhaVariable,
 } from '../github/GithubEnvironmentsClient.js';
+import { LocalActionsScaffolder, LOCAL_ACTION_REFS } from './LocalActionsScaffolder.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -46,7 +47,10 @@ export interface SyncResult {
  *   provider/infrastructure environment variables.
  */
 export class WorkflowGenerator {
-  constructor(private readonly envsClient: GithubEnvironmentsClient) {}
+  constructor(
+    private readonly envsClient: GithubEnvironmentsClient,
+    private readonly scaffolder?: LocalActionsScaffolder,
+  ) {}
 
   /**
    * Fetches live vars/secrets from GitHub and generates plan + apply workflows
@@ -57,6 +61,10 @@ export class WorkflowGenerator {
     if (!owner || !repo) {
       throw new Error('Workspace config is missing repo.repoOrg or repo.name.');
     }
+
+    const cfg = vscode.workspace.getConfiguration('terraformWorkspace');
+    const preferOpenTofu  = cfg.get<boolean>('preferOpenTofu', true);
+    const useLocalActions = cfg.get<boolean>('useLocalActions', true);
 
     // Repo-level vars/secrets apply to every environment
     const [repoSecrets, repoVars] = await Promise.all([
@@ -72,22 +80,26 @@ export class WorkflowGenerator {
         this.envsClient.listEnvironmentVariables(owner, repo, env.name).catch(() => [] as GhaVariable[]),
       ]);
 
-      const actions = resolveActions(config.compositeActions, config.compositeActionOrg);
+      const actions = useLocalActions
+        ? localActionRefs()
+        : resolveActions(config.compositeActions, config.compositeActionOrg);
       const stateConf = mergeStateConfig(config.stateConfig, env.stateConfig);
-      const envBlock = buildEnvBlock(repoVars, repoSecrets, envVars, envSecrets, env);
+      const envBlock = buildEnvBlock(repoVars, repoSecrets, envVars, envSecrets, env, preferOpenTofu, config.proxy);
+      const tfVersion = env.terraformVersion ?? config.terraformVersion;
+      const varfile   = env.varfile ?? `varfiles/${env.name}.tfvars`;
 
       results.push({
         filename: `terraform-plan-${env.name}.yml`,
         environmentName: env.name,
         type: 'plan',
-        yaml: generatePlanWorkflow(env, actions, stateConf, envBlock),
+        yaml: generatePlanWorkflow(env, actions, stateConf, envBlock, tfVersion, varfile),
       });
 
       results.push({
         filename: `terraform-apply-${env.name}.yml`,
         environmentName: env.name,
         type: 'apply',
-        yaml: generateApplyWorkflow(env, actions, stateConf, envBlock),
+        yaml: generateApplyWorkflow(env, actions, stateConf, envBlock, tfVersion, varfile),
       });
     }
 
@@ -112,6 +124,17 @@ export class WorkflowGenerator {
       await vscode.workspace.fs.writeFile(uri, Buffer.from(wf.yaml, 'utf-8'));
       written.push(uri);
     }
+
+    // When local actions are enabled, also scaffold them into the repo so the
+    // workflows we just wrote can resolve their `uses:` references.
+    const useLocalActions = vscode.workspace
+      .getConfiguration('terraformWorkspace')
+      .get<boolean>('useLocalActions', true);
+    if (useLocalActions && this.scaffolder) {
+      const actionFiles = await this.scaffolder.scaffold(folder);
+      written.push(...actionFiles);
+    }
+
     return written;
   }
 }
@@ -153,6 +176,24 @@ function resolveActions(
   };
 }
 
+/**
+ * Returns refs that point at the locally-scaffolded composite actions under
+ * `.github/actions/<name>/` in the workspace repo. `checkout` keeps using the
+ * official upstream action since it has no project-specific behavior.
+ */
+function localActionRefs(): CompositeActionRefs {
+  return {
+    checkout:       'actions/checkout@v4',
+    awsAuth:        LOCAL_ACTION_REFS['aws-auth'],
+    ghAuth:         LOCAL_ACTION_REFS['gh-auth'],
+    setupTerraform: LOCAL_ACTION_REFS['setup-terraform'],
+    terraformInit:  LOCAL_ACTION_REFS['terraform-init'],
+    terraformPlan:  LOCAL_ACTION_REFS['terraform-plan'],
+    terraformApply: LOCAL_ACTION_REFS['terraform-apply'],
+    s3Cleanup:      LOCAL_ACTION_REFS['s3-cleanup'],
+  };
+}
+
 interface ResolvedStateConfig {
   bucket: string;
   region: string;
@@ -191,6 +232,8 @@ function buildEnvBlock(
   envVars: GhaVariable[],
   envSecrets: GhaSecret[],
   localEnv: WorkspaceConfigEnv,
+  preferOpenTofu: boolean = true,
+  proxy?: { http?: string; https?: string; no?: string },
 ): string {
   // Ordered map: name → "${{ vars.NAME }}" (env-level overwrites repo-level)
   const varMap = new Map<string, string>();
@@ -224,6 +267,8 @@ function buildEnvBlock(
   }
 
   const lines: string[] = [
+    `  # ── Tooling ──────────────────────────────────────────────────────────────`,
+    `  TF_CLI: ${preferOpenTofu ? 'tofu' : 'terraform'}`,
     `  # ── State backend ─────────────────────────────────────────────────────────`,
     `  TF_STATE_BUCKET: \${{ vars.TF_STATE_BUCKET }}`,
     `  TF_STATE_REGION: \${{ vars.TF_STATE_REGION }}`,
@@ -232,7 +277,12 @@ function buildEnvBlock(
     `  # ── Plan / apply artifact cache ────────────────────────────────────────────`,
     `  TF_CACHE_BUCKET: \${{ vars.TF_CACHE_BUCKET }}`,
   ];
-
+  if (proxy && (proxy.http || proxy.https || proxy.no)) {
+    lines.push(`  # ── HTTP proxy passthrough ──────────────────────────────────────────────────`);
+    if (proxy.http)  lines.push(`  HTTP_PROXY: "${proxy.http}"`);
+    if (proxy.https) lines.push(`  HTTPS_PROXY: "${proxy.https}"`);
+    if (proxy.no)    lines.push(`  NO_PROXY: "${proxy.no}"`);
+  }
   if (varMap.size > 0) {
     lines.push(`  # ── Variables (non-sensitive) ─────────────────────────────────────────────`);
     for (const [name, ref] of varMap) {
@@ -312,11 +362,24 @@ function runnerLabels(env: WorkspaceConfigEnv): string {
 
 // ─── YAML generators ──────────────────────────────────────────────────────────
 
+function setupTerraformStep(actionRef: string, version: string | undefined): string {
+  const versionInputs = version
+    ? `
+        with:
+          terraform-version: "${version}"
+          tofu-version: "${version}"`
+    : '';
+  return `      - name: "Setup Terraform"
+        uses: "${actionRef}"${versionInputs}`;
+}
+
 function generatePlanWorkflow(
   env: WorkspaceConfigEnv,
   actions: CompositeActionRefs,
   state: ResolvedStateConfig,
   envBlock: string,
+  tfVersion: string | undefined,
+  varfile: string,
 ): string {
   return `# Generated by Terraform Workspace VS Code Extension
 # Re-sync: Ctrl/Cmd+Shift+P → "Terraform: Sync Workflows"
@@ -327,7 +390,7 @@ name: "Terraform Plan — ${env.name}"
 ${planTriggers(env)}
 
 concurrency:
-  group: "terraform-${env.name}-plan-\${{ github.ref }}"
+  group: "terraform-${env.name}"
   cancel-in-progress: false
 
 env:
@@ -352,31 +415,35 @@ jobs:
       - name: "Authenticate GitHub App"
         uses: "${actions.ghAuth}"
 
-      - name: "Setup Terraform"
-        uses: "${actions.setupTerraform}"
+${setupTerraformStep(actions.setupTerraform, tfVersion)}
 
       - name: "Terraform Init"
+        id: init
         uses: "${actions.terraformInit}"
         with:
-          workspace: \${{ inputs.workspace }}
-          working_directory: \${{ inputs.working_directory }}
+          workspace: "${env.name}"
+          working_directory: "."
           backend_bucket: \${{ env.TF_STATE_BUCKET }}
           backend_region: \${{ env.TF_STATE_REGION }}
           backend_dynamodb_table: \${{ env.TF_STATE_DYNAMODB_TABLE }}
           backend_key: "\${{ env.TF_STATE_KEY_PREFIX }}/\${{ github.repository }}/${env.name}/terraform.tfstate"
+          cache_bucket: \${{ env.TF_CACHE_BUCKET }}
 
       - name: "Terraform Plan"
         uses: "${actions.terraformPlan}"
         with:
-          workspace: \${{ inputs.workspace }}
-          working_directory: \${{ inputs.working_directory }}
+          workspace: "${env.name}"
+          working_directory: "."
           cache_bucket: \${{ env.TF_CACHE_BUCKET }}
+          cache_key:    \${{ steps.init.outputs.cache_key }}
+          varfile: "${varfile}"
 
-      - name: "S3 Cleanup"
+      - name: "Cache Cleanup"
         if: always()
         uses: "${actions.s3Cleanup}"
         with:
-          bucket: \${{ env.TF_CACHE_BUCKET }}
+          cache_bucket: \${{ env.TF_CACHE_BUCKET }}
+          cache_key:    \${{ steps.init.outputs.cache_key }}
 `;
 }
 
@@ -385,6 +452,8 @@ function generateApplyWorkflow(
   actions: CompositeActionRefs,
   state: ResolvedStateConfig,
   envBlock: string,
+  tfVersion: string | undefined,
+  varfile: string,
 ): string {
   return `# Generated by Terraform Workspace VS Code Extension
 # Re-sync: Ctrl/Cmd+Shift+P → "Terraform: Sync Workflows"
@@ -395,7 +464,7 @@ name: "Terraform Apply — ${env.name}"
 ${applyTriggers(env)}
 
 concurrency:
-  group: "terraform-${env.name}-apply"
+  group: "terraform-${env.name}"
   cancel-in-progress: false
 
 env:
@@ -419,30 +488,44 @@ jobs:
       - name: "Authenticate GitHub App"
         uses: "${actions.ghAuth}"
 
-      - name: "Setup Terraform"
-        uses: "${actions.setupTerraform}"
+${setupTerraformStep(actions.setupTerraform, tfVersion)}
 
       - name: "Terraform Init"
+        id: init
         uses: "${actions.terraformInit}"
         with:
-          workspace: \${{ inputs.workspace }}
-          working_directory: \${{ inputs.working_directory }}
+          workspace: "${env.name}"
+          working_directory: "."
           backend_bucket: \${{ env.TF_STATE_BUCKET }}
           backend_region: \${{ env.TF_STATE_REGION }}
           backend_dynamodb_table: \${{ env.TF_STATE_DYNAMODB_TABLE }}
           backend_key: "\${{ env.TF_STATE_KEY_PREFIX }}/\${{ github.repository }}/${env.name}/terraform.tfstate"
-
-      - name: "Terraform Apply"
-        uses: "${actions.terraformApply}"
-        with:
-          workspace: \${{ inputs.workspace }}
-          working_directory: \${{ inputs.working_directory }}
           cache_bucket: \${{ env.TF_CACHE_BUCKET }}
 
-      - name: "S3 Cleanup"
+      - name: "Terraform Plan"
+        id: plan
+        uses: "${actions.terraformPlan}"
+        with:
+          workspace: "${env.name}"
+          working_directory: "."
+          cache_bucket: \${{ env.TF_CACHE_BUCKET }}
+          cache_key:    \${{ steps.init.outputs.cache_key }}
+          varfile: "${varfile}"
+
+      - name: "Terraform Apply"
+        if: steps.plan.outputs.pending_changes == 'true'
+        uses: "${actions.terraformApply}"
+        with:
+          workspace: "${env.name}"
+          working_directory: "."
+          cache_bucket: \${{ env.TF_CACHE_BUCKET }}
+          cache_key:    \${{ steps.init.outputs.cache_key }}
+
+      - name: "Cache Cleanup"
         if: always()
         uses: "${actions.s3Cleanup}"
         with:
-          bucket: \${{ env.TF_CACHE_BUCKET }}
+          cache_bucket: \${{ env.TF_CACHE_BUCKET }}
+          cache_key:    \${{ steps.init.outputs.cache_key }}
 `;
 }

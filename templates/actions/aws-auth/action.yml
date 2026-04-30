@@ -1,0 +1,69 @@
+name: "AWS Auth"
+description: "Configures AWS credentials for Terraform. Supports OIDC role assumption and exports static creds for downstream steps that need them in env (e.g. cache S3 access)."
+
+inputs:
+  ecs:
+    description: "Compatibility flag with the upstream contract. When 'true' (default), credentials are exported as outputs so downstream steps can re-export them via env."
+    required: false
+    default: "true"
+  role-to-assume:
+    description: "IAM role ARN. Defaults to AWS_ROLE_TO_ASSUME env var."
+    required: false
+    default: ""
+  aws-region:
+    description: "AWS region. Defaults to TF_STATE_REGION env var."
+    required: false
+    default: ""
+  role-session-name:
+    description: "Session name."
+    required: false
+    default: "github-actions-terraform"
+
+outputs:
+  aws_access_key_id:
+    description: "Access key ID for downstream env passthrough."
+    value: ${{ steps.export.outputs.aws_access_key_id }}
+  aws_secret_access_key:
+    description: "Secret access key for downstream env passthrough."
+    value: ${{ steps.export.outputs.aws_secret_access_key }}
+  aws_session_token:
+    description: "Session token for downstream env passthrough."
+    value: ${{ steps.export.outputs.aws_session_token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Resolve inputs"
+      id: resolve
+      shell: bash
+      run: |
+        ROLE="${{ inputs.role-to-assume }}"
+        [ -z "$ROLE" ] && ROLE="${AWS_ROLE_TO_ASSUME:-}"
+        if [ -z "$ROLE" ]; then
+          echo "::error::No IAM role configured. Set AWS_ROLE_TO_ASSUME or pass role-to-assume."
+          exit 1
+        fi
+        REGION="${{ inputs.aws-region }}"
+        [ -z "$REGION" ] && REGION="${TF_STATE_REGION:-us-east-1}"
+        echo "role=$ROLE"     >> "$GITHUB_OUTPUT"
+        echo "region=$REGION" >> "$GITHUB_OUTPUT"
+
+    - name: "Configure AWS Credentials"
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume:      ${{ steps.resolve.outputs.role }}
+        aws-region:          ${{ steps.resolve.outputs.region }}
+        role-session-name:   ${{ inputs.role-session-name }}
+        output-credentials:  true
+      id: creds
+
+    - name: "Export credentials as outputs"
+      id: export
+      shell: bash
+      run: |
+        echo "::add-mask::${{ steps.creds.outputs.aws-access-key-id }}"
+        echo "::add-mask::${{ steps.creds.outputs.aws-secret-access-key }}"
+        echo "::add-mask::${{ steps.creds.outputs.aws-session-token }}"
+        echo "aws_access_key_id=${{ steps.creds.outputs.aws-access-key-id }}"         >> "$GITHUB_OUTPUT"
+        echo "aws_secret_access_key=${{ steps.creds.outputs.aws-secret-access-key }}" >> "$GITHUB_OUTPUT"
+        echo "aws_session_token=${{ steps.creds.outputs.aws-session-token }}"         >> "$GITHUB_OUTPUT"

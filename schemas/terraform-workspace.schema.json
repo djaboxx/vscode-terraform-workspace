@@ -1,0 +1,172 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://happypathway.com/schemas/terraform-workspace.schema.json",
+  "title": "Terraform Workspace Config",
+  "description": "Configuration file for the VS Code Terraform Workspace extension. Binds a workspace folder to a GitHub repo and a set of GitHub Environments (= terraform workspaces).",
+  "type": "object",
+  "required": ["version", "repo", "environments"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version. Currently always 1."
+    },
+    "compositeActionOrg": {
+      "type": "string",
+      "description": "GitHub org that owns the composite action repos."
+    },
+    "terraformVersion": {
+      "type": "string",
+      "description": "Default Terraform/OpenTofu version. Falls back to the `terraform_version` GitHub Actions variable when not set."
+    },
+    "proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "HTTP(S) proxy passthrough emitted on every workflow step.",
+      "properties": {
+        "http": { "type": "string" },
+        "https": { "type": "string" },
+        "no": { "type": "string" }
+      }
+    },
+    "repo": { "$ref": "#/definitions/repo" },
+    "environments": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/environment" }
+    },
+    "stateConfig": { "$ref": "#/definitions/stateConfig" },
+    "compositeActions": { "$ref": "#/definitions/compositeActions" }
+  },
+  "definitions": {
+    "repo": {
+      "type": "object",
+      "required": ["name", "repoOrg"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Repo name (no org prefix)." },
+        "repoOrg": { "type": "string", "description": "GitHub org or user that owns the repo." },
+        "description": { "type": "string" },
+        "createRepo": { "type": "boolean" },
+        "isPrivate": { "type": "boolean" },
+        "isTemplate": { "type": "boolean" },
+        "templateRepoOrg": { "type": "string" },
+        "templateRepo": { "type": "string" },
+        "enforcePrs": { "type": "boolean" },
+        "createCodeowners": { "type": "boolean" },
+        "codeownersTeam": { "type": "string" },
+        "adminTeams": { "type": "array", "items": { "type": "string" } },
+        "pullRequestBypassers": { "type": "array", "items": { "type": "string" } },
+        "repoTopics": { "type": "array", "items": { "type": "string" } },
+        "archiveOnDestroy": { "type": "boolean" },
+        "vars": { "type": "array", "items": { "$ref": "#/definitions/nameValue" } },
+        "secrets": { "type": "array", "items": { "$ref": "#/definitions/nameValue" } }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["name", "cacheBucket"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "GitHub Environment name (= terraform workspace name)." },
+        "cacheBucket": { "type": "string", "description": "S3 bucket used for plan/apply artifact caching." },
+        "runnerGroup": { "type": "string" },
+        "preventSelfReview": { "type": "boolean" },
+        "waitTimer": { "type": "integer", "minimum": 0, "maximum": 43200 },
+        "canAdminsBypass": { "type": "boolean" },
+        "terraformVersion": { "type": "string", "description": "Per-environment Terraform/OpenTofu version pin." },
+        "varfile": { "type": "string", "description": "Path to per-env tfvars file (default: varfiles/<env>.tfvars)." },
+        "reviewers": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "users": { "type": "array", "items": { "type": "string" } },
+            "teams": { "type": "array", "items": { "type": "string" } },
+            "enforceReviewers": { "type": "boolean" }
+          }
+        },
+        "deploymentBranchPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "branch": { "type": "string" },
+            "branchPattern": { "type": "string" },
+            "createBranch": { "type": "boolean" },
+            "createBranchProtection": { "type": "boolean" },
+            "protectedBranches": { "type": "boolean" },
+            "customBranchPolicies": { "type": "boolean" },
+            "enforceAdmins": { "type": "boolean" },
+            "restrictBranches": { "type": "boolean" },
+            "requiredStatusChecks": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["contexts"],
+              "properties": {
+                "strict": { "type": "boolean" },
+                "contexts": { "type": "array", "items": { "type": "string" } }
+              }
+            },
+            "requiredPullRequestReviews": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "dismissStaleReviews": { "type": "boolean" },
+                "requireCodeOwnerReviews": { "type": "boolean" },
+                "requiredApprovingReviewCount": { "type": "integer", "minimum": 0, "maximum": 6 }
+              }
+            }
+          }
+        },
+        "stateConfig": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bucket": { "type": "string" },
+            "keyPrefix": { "type": "string" },
+            "region": { "type": "string" },
+            "dynamodbTable": { "type": "string" },
+            "setBackend": { "type": "boolean" }
+          }
+        },
+        "vars": { "type": "array", "items": { "$ref": "#/definitions/nameValue" } },
+        "secrets": { "type": "array", "items": { "$ref": "#/definitions/nameValue" } }
+      }
+    },
+    "stateConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bucket": { "type": "string" },
+        "key": { "type": "string" },
+        "region": { "type": "string" },
+        "dynamodbTable": { "type": "string" },
+        "setBackend": { "type": "boolean" },
+        "keyPrefix": { "type": "string" }
+      }
+    },
+    "compositeActions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "checkout": { "type": "string" },
+        "awsAuth": { "type": "string" },
+        "setupTerraform": { "type": "string" },
+        "terraformInit": { "type": "string" },
+        "terraformPlan": { "type": "string" },
+        "terraformApply": { "type": "string" },
+        "ghAuth": { "type": "string" },
+        "s3Cleanup": { "type": "string" }
+      }
+    },
+    "nameValue": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+        "value": { "type": "string" }
+      }
+    }
+  }
+}

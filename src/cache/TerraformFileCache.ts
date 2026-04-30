@@ -2,6 +2,9 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
+import { sanitizeFtsQuery } from './sanitizeFtsQuery.js';
+
+export { sanitizeFtsQuery };
 
 /** Max bytes to store per individual .tf file */
 const FILE_CAP = 8 * 1024;
@@ -185,8 +188,12 @@ export class TerraformFileCache implements vscode.Disposable {
    * Returns up to 20 results with a highlighted snippet.
    */
   search(query: string): TfSearchRow[] {
+    const sanitized = sanitizeFtsQuery(query);
+    if (!sanitized) {
+      return [];
+    }
     try {
-      return this.stmtSearch.all(query) as TfSearchRow[];
+      return this.stmtSearch.all(sanitized) as TfSearchRow[];
     } catch {
       // FTS5 syntax errors surface as exceptions — return empty rather than crashing
       return [];

@@ -5,6 +5,24 @@ import { GitRemoteParser } from './GitRemoteParser.js';
 const GITHUB_COM = 'github.com';
 const REQUIRED_SCOPES = ['repo', 'read:org', 'workflow'];
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(response: Response, attempt: number): number {
+  const retryAfter = response.headers.get('retry-after');
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (!Number.isNaN(seconds)) return Math.min(seconds * 1000, 30_000);
+  }
+  const reset = response.headers.get('x-ratelimit-reset');
+  if (reset) {
+    const ms = Number(reset) * 1000 - Date.now();
+    if (ms > 0) return Math.min(ms, 30_000);
+  }
+  return Math.min(2 ** attempt * 500, 8_000);
+}
+
 /**
  * Manages GitHub OAuth authentication and org discovery.
  *
@@ -34,6 +52,12 @@ export class GithubAuthProvider {
   }
 
   get hostname(): string {
+    return this._hostname;
+  }
+
+  /** Awaits git-remote detection and returns the resolved hostname. */
+  async resolveHostname(): Promise<string> {
+    await this.ensureHostDetected();
     return this._hostname;
   }
 
@@ -91,6 +115,46 @@ export class GithubAuthProvider {
   async getToken(silent = false): Promise<string | undefined> {
     const session = await this.getSession(silent);
     return session?.accessToken;
+  }
+
+  /**
+   * fetch() wrapper with retry-after / secondary-rate-limit / 5xx exponential backoff.
+   * Use this in place of `fetch()` for every GitHub API call so transient
+   * failures don't surface as user-visible errors.
+   *
+   * Retries up to `maxRetries` (default 3) times on:
+   *   - 429 / 403 with `x-ratelimit-remaining: 0` or `retry-after` header
+   *   - 502, 503, 504 (transient gateway errors)
+   *   - network errors (fetch throws)
+   *
+   * Honors `Retry-After` when present; otherwise uses exponential backoff
+   * (500ms → 1s → 2s).
+   */
+  async fetch(url: string, init?: RequestInit & { maxRetries?: number }): Promise<Response> {
+    const maxRetries = init?.maxRetries ?? 3;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await fetch(url, init);
+        if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
+          if (attempt === maxRetries) return response;
+          const wait = retryDelayMs(response, attempt);
+          await sleep(wait);
+          continue;
+        }
+        if (response.status >= 502 && response.status <= 504) {
+          if (attempt === maxRetries) return response;
+          await sleep(retryDelayMs(response, attempt));
+          continue;
+        }
+        return response;
+      } catch (err) {
+        lastErr = err;
+        if (attempt === maxRetries) throw err;
+        await sleep(2 ** attempt * 500);
+      }
+    }
+    throw lastErr ?? new Error('GitHub fetch failed after retries');
   }
 
   /** Returns the authenticated GitHub username. */

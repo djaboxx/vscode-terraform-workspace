@@ -1,0 +1,13 @@
+// Workspace recommendations: contributors get prompted to install these
+// when they open the repo. Mirrors the .devcontainer extension list so the
+// local-machine experience matches the Codespaces / dev container one.
+{
+  "recommendations": [
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "vitest.explorer",
+    "github.vscode-github-actions",
+    "hashicorp.terraform",
+    "ms-azuretools.vscode-docker"
+  ]
+}

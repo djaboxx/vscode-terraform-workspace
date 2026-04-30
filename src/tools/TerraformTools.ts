@@ -1,6 +1,40 @@
 import * as vscode from 'vscode';
 import { ExtensionServices } from '../services.js';
 import { VariableScope } from '../types/index.js';
+import { WorkflowGenerator } from '../workflows/WorkflowGenerator.js';
+import { GitRemoteParser } from '../auth/GitRemoteParser.js';
+import { backendBootstrapTf, defaultOidcProvider, oidcTrustPolicy } from '../workflows/Scaffolders.js';
+import { writeModuleRepoFiles } from '../workflows/ModuleRepoScaffolder.js';
+import {
+  RunApplyInputSchema,
+  SetVariableInputSchema,
+  GenerateCodeInputSchema,
+  BootstrapWorkspaceInputSchema,
+  SearchTfCodeInputSchema,
+  DiscoverWorkspaceInputSchema,
+  DiscoverWorkspaceInput,
+  DeleteVariableInputSchema,
+  DeleteVariableInput,
+  ResolveVariableInputSchema,
+  ResolveVariableInput,
+  ReviewDeploymentInputSchema,
+  ReviewDeploymentInput,
+  LintWorkflowsInputSchema,
+  LintWorkflowsInput,
+  CheckDriftInputSchema,
+  CheckDriftInput,
+  ScaffoldBackendInputSchema,
+  ScaffoldBackendInput,
+  ScaffoldOidcTrustInputSchema,
+  ScaffoldOidcTrustInput,
+  ScaffoldFromTemplateInputSchema,
+  ScaffoldFromTemplateInput,
+  ScaffoldModuleRepoInputSchema,
+  ScaffoldModuleRepoInput,
+} from '../schemas/toolInputs.js';
+import { CompiledSchema, formatSchemaErrors } from '../schemas/defineSchema.js';
+import { WorkspaceAutoDiscovery } from '../discovery/WorkspaceAutoDiscovery.js';
+import { buildConfigFromDiscovery, summarizeDiscovery } from '../discovery/buildConfigFromDiscovery.js';
 
 export function registerTerraformTools(
   context: vscode.ExtensionContext,
@@ -16,6 +50,21 @@ export function registerTerraformTools(
     vscode.lm.registerTool('terraform_set_variable', new SetVariableTool(services)),
     vscode.lm.registerTool('terraform_generate_code', new GenerateCodeTool(services)),
     vscode.lm.registerTool('terraform_bootstrap_workspace', new BootstrapWorkspaceTool(services, context)),
+    vscode.lm.registerTool('terraform_read_config', new ReadConfigTool(services)),
+    vscode.lm.registerTool('terraform_update_config', new UpdateConfigTool(services)),
+    vscode.lm.registerTool('terraform_sync_workflows', new SyncWorkflowsTool(services)),
+    vscode.lm.registerTool('terraform_get_run_status', new GetRunStatusTool(services)),
+    vscode.lm.registerTool('terraform_search_tf_code', new SearchTfCodeTool(services)),
+    vscode.lm.registerTool('terraform_discover_workspace', new DiscoverWorkspaceTool(services)),
+    vscode.lm.registerTool('terraform_delete_variable', new DeleteVariableTool(services)),
+    vscode.lm.registerTool('terraform_resolve_variable', new ResolveVariableTool(services)),
+    vscode.lm.registerTool('terraform_review_deployment', new ReviewDeploymentTool(services)),
+    vscode.lm.registerTool('terraform_lint_workflows', new LintWorkflowsTool(services)),
+    vscode.lm.registerTool('terraform_check_drift', new CheckDriftTool(services)),
+    vscode.lm.registerTool('terraform_scaffold_backend', new ScaffoldBackendTool()),
+    vscode.lm.registerTool('terraform_scaffold_oidc_trust', new ScaffoldOidcTrustTool(services)),
+    vscode.lm.registerTool('terraform_scaffold_from_template', new ScaffoldFromTemplateTool(services)),
+    vscode.lm.registerTool('terraform_scaffold_module_repo', new ScaffoldModuleRepoTool(services)),
   );
 }
 
@@ -31,6 +80,49 @@ async function getRepoContext(services: ExtensionServices): Promise<{ owner: str
 
 function textResult(text: string): vscode.LanguageModelToolResult {
   return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
+}
+
+/**
+ * Hard cap on text returned to the language model so a runaway state file or
+ * search result never blows the context window. Conservatively chosen — most
+ * model context windows are ~128k tokens (~512KB), but a single tool result
+ * shouldn't dominate. Truncated results get a clear marker so the model
+ * knows it's seeing partial data and can ask for a narrower query.
+ */
+const TOOL_RESULT_CHAR_CAP = 60_000;
+
+function cappedTextResult(text: string, label = 'result'): vscode.LanguageModelToolResult {
+  if (text.length <= TOOL_RESULT_CHAR_CAP) return textResult(text);
+  const head = text.slice(0, TOOL_RESULT_CHAR_CAP);
+  const elided = text.length - TOOL_RESULT_CHAR_CAP;
+  return textResult(
+    `${head}\n\n...\n\n[truncated ${elided.toLocaleString()} characters from ${label}; ` +
+    `narrow your query or paginate to see the rest]`,
+  );
+}
+
+function cancelledResult(): vscode.LanguageModelToolResult {
+  return textResult('Tool invocation was cancelled before completion.');
+}
+
+/**
+ * Validate a tool input against its schema. On failure, returns a
+ * `LanguageModelToolResult` with a field-pointed error message that the LM
+ * can read and self-correct from. On success, returns the typed input.
+ */
+function validateToolInput<T>(
+  schema: CompiledSchema<T>,
+  input: unknown,
+  toolName: string,
+): { ok: true; value: T } | { ok: false; result: vscode.LanguageModelToolResult } {
+  const r = schema.validate(input);
+  if (r.ok) return { ok: true, value: r.value };
+  return {
+    ok: false,
+    result: textResult(
+      `Invalid input for \`${toolName}\`:\n${formatSchemaErrors(r.errors)}`,
+    ),
+  };
 }
 
 // ─── terraform_run_plan ───────────────────────────────────────────────────────
@@ -68,11 +160,13 @@ class RunPlanTool implements vscode.LanguageModelTool<RunPlanInput> {
 
     try {
       const before = new Date();
+      const ref = await GitRemoteParser.getDefaultBranch(active?.folder.uri.fsPath);
       await this.services.actionsClient.triggerWorkflow(
         owner,
         repo,
         `terraform-plan-${workspace}.yml`,
         { workspace, working_directory: workingDirectory },
+        ref,
       );
 
       const run = await this.services.actionsClient.waitForNewRun(
@@ -80,6 +174,8 @@ class RunPlanTool implements vscode.LanguageModelTool<RunPlanInput> {
         repo,
         `terraform-plan-${workspace}.yml`,
         before,
+        30000,
+        _token,
       );
 
       if (run) {
@@ -126,22 +222,28 @@ class RunApplyTool implements vscode.LanguageModelTool<RunApplyInput> {
     options: vscode.LanguageModelToolInvocationOptions<RunApplyInput>,
     _token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(RunApplyInputSchema, options.input, 'terraform_run_apply');
+    if (!v.ok) return v.result;
+
     const ctx = await getRepoContext(this.services);
     if (!ctx) {
       return textResult('No workspace config found.');
     }
 
     const { owner, repo } = ctx;
-    const workspace = options.input.workspace;
-    const workingDirectory = options.input.workingDirectory ?? '.';
+    const workspace = v.value.workspace;
+    const workingDirectory = v.value.workingDirectory ?? '.';
 
     try {
       const before = new Date();
+      const active = await this.services.configManager.getActive();
+      const ref = await GitRemoteParser.getDefaultBranch(active?.folder.uri.fsPath);
       await this.services.actionsClient.triggerWorkflow(
         owner,
         repo,
         `terraform-apply-${workspace}.yml`,
         { workspace, working_directory: workingDirectory },
+        ref,
       );
 
       const run = await this.services.actionsClient.waitForNewRun(
@@ -149,6 +251,8 @@ class RunApplyTool implements vscode.LanguageModelTool<RunApplyInput> {
         repo,
         `terraform-apply-${workspace}.yml`,
         before,
+        30000,
+        _token,
       );
 
       if (run) {
@@ -351,13 +455,16 @@ class SetVariableTool implements vscode.LanguageModelTool<SetVariableInput> {
     options: vscode.LanguageModelToolInvocationOptions<SetVariableInput>,
     _token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(SetVariableInputSchema, options.input, 'terraform_set_variable');
+    if (!v.ok) return v.result;
+
     const ctx = await getRepoContext(this.services);
     if (!ctx) {
       return textResult('No workspace config found.');
     }
 
     const { owner, repo } = ctx;
-    const { key, value, sensitive, scope = 'environment', workspace } = options.input;
+    const { key, value, sensitive, scope = 'environment', workspace } = v.value;
 
     try {
       if (scope === 'environment' && workspace) {
@@ -382,11 +489,21 @@ class SetVariableTool implements vscode.LanguageModelTool<SetVariableInput> {
         return textResult('Invalid scope or missing workspace name for environment scope.');
       }
 
-      return textResult(
-        `${sensitive ? 'Secret' : 'Variable'} "${key}" set in scope "${scope}"${workspace ? ` / environment "${workspace}"` : ''}.`,
-      );
+      // NEVER echo the value back to the LM. For secrets we don't even
+      // confirm what was stored beyond the key+scope.
+      const where = `${scope}${workspace ? ` / environment "${workspace}"` : ''}`;
+      if (sensitive) {
+        return textResult(
+          `Secret "${key}" stored in scope "${where}". Value was redacted from this response.\n\n` +
+          `> Reminder: secrets pasted into chat have already passed through the language model. ` +
+          `For high-sensitivity values prefer the **Terraform: Add Secret** command instead.`,
+        );
+      }
+      return textResult(`Variable "${key}" set in scope "${where}".`);
     } catch (err) {
-      return textResult(`Error setting variable: ${String(err)}`);
+      // Avoid leaking the value through error messages from upstream HTTP libs.
+      const safe = String(err).replaceAll(value, '«REDACTED»');
+      return textResult(`Error setting variable: ${safe}`);
     }
   }
 
@@ -401,7 +518,10 @@ class SetVariableTool implements vscode.LanguageModelTool<SetVariableInput> {
         ? {
             title: 'Set Secret',
             message: new vscode.MarkdownString(
-              `Store \`${key}\` as an encrypted GitHub Secret?`,
+              `Store \`${key}\` as an encrypted GitHub Secret?\n\n` +
+              `⚠️ **The secret value has already been sent to the language model** as part of this tool call. ` +
+              `For maximum-sensitivity values, cancel and use the **Terraform: Add Secret** command, which ` +
+              `prompts via VS Code's input box and never exposes the value to the model.`,
             ),
           }
         : undefined,
@@ -424,9 +544,12 @@ class GenerateCodeTool implements vscode.LanguageModelTool<GenerateCodeInput> {
     options: vscode.LanguageModelToolInvocationOptions<GenerateCodeInput>,
     token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelToolResult> {
-    const { description, targetFile, useModules = true } = options.input;
+    const v = validateToolInput(GenerateCodeInputSchema, options.input, 'terraform_generate_code');
+    if (!v.ok) return v.result;
+    const { description, targetFile, useModules = true } = v.value;
 
-    const models = await vscode.lm.selectChatModels({ family: 'gpt-4o' });
+    const aiModel = vscode.workspace.getConfiguration('terraformWorkspace').get<string>('aiModel', 'gpt-4o');
+    const models = await vscode.lm.selectChatModels({ family: aiModel });
     const model = models[0];
 
     if (!model) {
@@ -492,12 +615,17 @@ class BootstrapWorkspaceTool implements vscode.LanguageModelTool<BootstrapWorksp
     options: vscode.LanguageModelToolInvocationOptions<BootstrapWorkspaceInput>,
     _token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelToolResult> {
-    const { repoName, repoOrg, environments, stateBucket, stateRegion } = options.input;
+    const v = validateToolInput(BootstrapWorkspaceInputSchema, options.input, 'terraform_bootstrap_workspace');
+    if (!v.ok) return v.result;
+    const { repoName, repoOrg, environments, stateBucket, stateRegion } = v.value as BootstrapWorkspaceInput;
 
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
       return textResult('No workspace folder open.');
     }
+
+    // Prefer the user's pinned folder selection over the first one in the list
+    const targetFolder = this.services.configManager.getActiveFolder() ?? folders[0];
 
     const vsConfig = vscode.workspace.getConfiguration('terraformWorkspace');
     const compositeOrg = vsConfig.get<string>('compositeActionOrg', 'HappyPathway');
@@ -505,7 +633,7 @@ class BootstrapWorkspaceTool implements vscode.LanguageModelTool<BootstrapWorksp
 
     try {
       const config = await this.services.configManager.createDefault(
-        folders[0],
+        targetFolder,
         `${repoOrg}/${repoName}`,
         compositeOrg,
       );
@@ -534,7 +662,7 @@ class BootstrapWorkspaceTool implements vscode.LanguageModelTool<BootstrapWorksp
           : undefined,
       }));
 
-      await this.services.configManager.write(folders[0], config);
+      await this.services.configManager.write(targetFolder, config);
 
       return textResult(
         `Workspace bootstrapped for ${repoOrg}/${repoName}.\n` +
@@ -561,5 +689,799 @@ class BootstrapWorkspaceTool implements vscode.LanguageModelTool<BootstrapWorksp
         ),
       },
     };
+  }
+}
+
+// ─── terraform_read_config ────────────────────────────────────────────────────
+
+class ReadConfigTool implements vscode.LanguageModelTool<Record<string, never>> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    _options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const active = await this.services.configManager.getActive();
+    if (!active) {
+      return textResult('No workspace config found. Run bootstrap or open the config panel first.');
+    }
+    return textResult(JSON.stringify(active.config, null, 2));
+  }
+}
+
+// ─── terraform_update_config ──────────────────────────────────────────────────
+
+interface UpdateConfigInput {
+  stateConfig?: {
+    bucket?: string;
+    region?: string;
+    keyPrefix?: string;
+    dynamodbTable?: string;
+    setBackend?: boolean;
+  };
+  compositeActions?: {
+    checkout?: string;
+    awsAuth?: string;
+    ghAuth?: string;
+    setupTerraform?: string;
+    terraformInit?: string;
+    terraformPlan?: string;
+    terraformApply?: string;
+    s3Cleanup?: string;
+  };
+  compositeActionOrg?: string;
+  repo?: {
+    name?: string;
+    repoOrg?: string;
+    description?: string;
+    isPrivate?: boolean;
+    enforcePrs?: boolean;
+    createCodeowners?: boolean;
+    codeownersTeam?: string;
+    adminTeams?: string[];
+    repoTopics?: string[];
+  };
+}
+
+class UpdateConfigTool implements vscode.LanguageModelTool<UpdateConfigInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<UpdateConfigInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const active = await this.services.configManager.getActive();
+    if (!active) {
+      return textResult('No workspace config found.');
+    }
+
+    const { folder, config } = active;
+    const patch = options.input;
+
+    if (patch.stateConfig) {
+      config.stateConfig = { ...config.stateConfig, ...patch.stateConfig };
+    }
+    if (patch.compositeActions) {
+      config.compositeActions = { ...config.compositeActions, ...patch.compositeActions };
+    }
+    if (patch.compositeActionOrg !== undefined) {
+      config.compositeActionOrg = patch.compositeActionOrg;
+    }
+    if (patch.repo) {
+      config.repo = { ...config.repo, ...patch.repo };
+    }
+
+    await this.services.configManager.write(folder, config);
+    return textResult(
+      `Config updated for ${config.repo.repoOrg}/${config.repo.name}.\n` +
+      `Updated fields: ${Object.keys(patch).join(', ')}\n\n` +
+      `Run terraform_sync_workflows to regenerate workflow files if needed.`,
+    );
+  }
+
+  prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<UpdateConfigInput>,
+    _token: vscode.CancellationToken,
+  ): vscode.PreparedToolInvocation {
+    const fields = Object.keys(options.input).join(', ');
+    return {
+      invocationMessage: `Updating workspace config (${fields})`,
+      confirmationMessages: {
+        title: 'Update Terraform Workspace Config',
+        message: new vscode.MarkdownString(
+          `Write changes to \`.vscode/terraform-workspace.json\`?\nFields: \`${fields}\``,
+        ),
+      },
+    };
+  }
+}
+
+// ─── terraform_sync_workflows ─────────────────────────────────────────────────
+
+class SyncWorkflowsTool implements vscode.LanguageModelTool<Record<string, never>> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    _options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const active = await this.services.configManager.getActive();
+    if (!active) {
+      return textResult('No workspace config found.');
+    }
+
+    try {
+      const generator = new WorkflowGenerator(this.services.envsClient, this.services.actionsScaffolder);
+      const workflows = await generator.generateAll(active.config);
+      const uris = await generator.writeToWorkspace(active.folder, workflows);
+      const filenames = uris.map(u => vscode.workspace.asRelativePath(u)).join(', ');
+      return textResult(`Generated ${workflows.length} workflow file(s): ${filenames}`);
+    } catch (err) {
+      return textResult(`Error generating workflows: ${String(err)}`);
+    }
+  }
+
+  prepareInvocation(
+    _options: vscode.LanguageModelToolInvocationPrepareOptions<Record<string, never>>,
+    _token: vscode.CancellationToken,
+  ): vscode.PreparedToolInvocation {
+    return {
+      invocationMessage: 'Generating GitHub Actions workflow files from workspace config',
+      confirmationMessages: {
+        title: 'Sync Terraform Workflows',
+        message: new vscode.MarkdownString(
+          'Overwrite `.github/workflows/terraform-*.yml` files from the current workspace config?',
+        ),
+      },
+    };
+  }
+}
+
+// ─── terraform_get_run_status ─────────────────────────────────────────────────
+
+interface GetRunStatusInput {
+  workspace?: string;
+  limit?: number;
+}
+
+class GetRunStatusTool implements vscode.LanguageModelTool<GetRunStatusInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<GetRunStatusInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const ctx = await getRepoContext(this.services);
+    if (!ctx) {
+      return textResult('No workspace config found.');
+    }
+
+    const active = await this.services.configManager.getActive();
+    const limit = options.input.limit ?? 3;
+    const workspaces = options.input.workspace
+      ? [options.input.workspace]
+      : (active?.config.environments.map(e => e.name) ?? []);
+
+    if (workspaces.length === 0) {
+      return textResult('No workspaces configured.');
+    }
+
+    const { owner, repo } = ctx;
+    const lines: string[] = [];
+
+    for (const ws of workspaces) {
+      const [planRuns, applyRuns] = await Promise.all([
+        this.services.actionsClient.getWorkflowRuns(owner, repo, `terraform-plan-${ws}.yml`, limit).catch(() => []),
+        this.services.actionsClient.getWorkflowRuns(owner, repo, `terraform-apply-${ws}.yml`, limit).catch(() => []),
+      ]);
+
+      lines.push(`## ${ws}`);
+      if (planRuns.length === 0 && applyRuns.length === 0) {
+        lines.push('  No runs found.');
+        continue;
+      }
+      for (const run of planRuns) {
+        lines.push(`  [plan]  #${run.id} ${run.status}/${run.conclusion ?? 'pending'} — ${run.html_url}`);
+      }
+      for (const run of applyRuns) {
+        lines.push(`  [apply] #${run.id} ${run.status}/${run.conclusion ?? 'pending'} — ${run.html_url}`);
+      }
+    }
+
+    return textResult(lines.join('\n'));
+  }
+}
+
+// ─── terraform_search_tf_code ─────────────────────────────────────────────────
+
+interface SearchTfCodeInput {
+  query: string;
+  limit?: number;
+}
+
+class SearchTfCodeTool implements vscode.LanguageModelTool<SearchTfCodeInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<SearchTfCodeInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(SearchTfCodeInputSchema, options.input, 'terraform_search_tf_code');
+    if (!v.ok) return v.result;
+
+    const active = await this.services.configManager.getActive();
+    if (token.isCancellationRequested) return cancelledResult();
+    const org = active?.config.repo.repoOrg;
+
+    const { query, limit = 10 } = v.value;
+    const lines: string[] = [];
+
+    // ── 1. Local workspace search (SQLite FTS5) ───────────────────────────────
+    const localHits = this.services.tfCache.search(query);
+    if (localHits.length > 0) {
+      lines.push(`## Local workspace matches (${localHits.length})\n`);
+      for (const hit of localHits) {
+        lines.push(`### ${hit.rel_path}`);
+        lines.push(`\`\`\`hcl\n${hit.snippet}\n\`\`\``);
+        lines.push('');
+      }
+    }
+    if (token.isCancellationRequested) return cancelledResult();
+
+    // ── 2. GitHub org-wide search ─────────────────────────────────────────────
+    if (!org) {
+      if (lines.length === 0) {
+        return textResult('No workspace config found — cannot determine org to search, and no local .tf files cached.');
+      }
+      return cappedTextResult(lines.join('\n'), 'search results');
+    }
+
+    try {
+      const response = await this.services.searchClient.searchOrgCode(
+        query, org, limit, ['language:HCL'],
+      );
+      if (token.isCancellationRequested) return cancelledResult();
+
+      if (response.totalCount > 0) {
+        lines.push(`## GitHub \`${org}\` matches (${response.totalCount} total, showing ${response.items.length})\n`);
+        for (const item of response.items) {
+          lines.push(`### ${item.repoFullName} — ${item.path}`);
+          lines.push(`URL: ${item.htmlUrl}`);
+          if (item.fragments.length > 0) {
+            lines.push('```hcl');
+            lines.push(item.fragments[0].trim());
+            lines.push('```');
+          }
+          lines.push('');
+        }
+      }
+    } catch (err) {
+      lines.push(`**GitHub search error:** ${String(err)}`);
+    }
+
+    if (lines.length === 0) {
+      return textResult(`No results found for "${query}" in the local workspace or org "${org}".`);
+    }
+
+    return textResult(lines.join('\n'));
+  }
+}
+
+// ─── terraform_discover_workspace ────────────────────────────────────────────
+
+class DiscoverWorkspaceTool implements vscode.LanguageModelTool<DiscoverWorkspaceInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<DiscoverWorkspaceInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(DiscoverWorkspaceInputSchema, options.input, 'terraform_discover_workspace');
+    if (!v.ok) return v.result;
+
+    const folder =
+      this.services.configManager.getActiveFolder() ?? vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return textResult('No workspace folder open.');
+    }
+
+    const discovery = new WorkspaceAutoDiscovery({ envsClient: this.services.envsClient });
+    const result = await discovery.discover(folder);
+
+    const vsConfig = vscode.workspace.getConfiguration('terraformWorkspace');
+    const suggested = buildConfigFromDiscovery(result, {
+      compositeActionOrg: vsConfig.get<string>('compositeActionOrg', 'HappyPathway'),
+      defaultStateRegion: vsConfig.get<string>('defaultStateRegion', 'us-east-1'),
+      defaultRunnerGroup: vsConfig.get<string>('defaultRunnerGroup', 'self-hosted'),
+    });
+
+    if (v.value.applyDefaults) {
+      try {
+        await this.services.configManager.write(folder, suggested);
+      } catch (err) {
+        return textResult(`Discovery succeeded but writing config failed: ${String(err)}`);
+      }
+    }
+
+    const lines: string[] = [
+      '## Terraform workspace discovery',
+      '',
+      summarizeDiscovery(result),
+      '',
+      '### Suggested config',
+      '```json',
+      JSON.stringify(suggested, null, 2),
+      '```',
+    ];
+    if (v.value.applyDefaults) {
+      lines.push('', '_Wrote suggested config to `.vscode/terraform-workspace.json`._');
+    } else {
+      lines.push('', '_Pass `applyDefaults: true` to write this config to disk, or open the Configure Workspace panel to edit it._');
+    }
+    return textResult(lines.join('\n'));
+  }
+
+  prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<DiscoverWorkspaceInput>,
+    _token: vscode.CancellationToken,
+  ): vscode.PreparedToolInvocation {
+    return {
+      invocationMessage: options.input.applyDefaults
+        ? 'Discovering Terraform defaults and writing config'
+        : 'Discovering Terraform workspace defaults',
+      confirmationMessages: options.input.applyDefaults
+        ? {
+            title: 'Apply discovered defaults',
+            message: new vscode.MarkdownString(
+              'Write a discovered `.vscode/terraform-workspace.json`? Existing config will be overwritten.',
+            ),
+          }
+        : undefined,
+    };
+  }
+}
+
+// ─── terraform_delete_variable ───────────────────────────────────────────────
+
+class DeleteVariableTool implements vscode.LanguageModelTool<DeleteVariableInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<DeleteVariableInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(DeleteVariableInputSchema, options.input, 'terraform_delete_variable');
+    if (!v.ok) return v.result;
+
+    const ctx = await getRepoContext(this.services);
+    if (!ctx) return textResult('No active workspace config (need owner/repo).');
+    const { owner, repo } = ctx;
+    const { scope, key, environment, sensitive } = v.value;
+
+    if (scope === 'environment' && !environment) {
+      return textResult('`environment` is required when `scope` is "environment".');
+    }
+
+    try {
+      if (scope === 'environment') {
+        if (sensitive) {
+          await this.services.envsClient.deleteEnvironmentSecret(owner, repo, environment!, key);
+        } else {
+          await this.services.envsClient.deleteEnvironmentVariable(owner, repo, environment!, key);
+        }
+      } else {
+        if (sensitive) {
+          await this.services.envsClient.deleteRepoSecret(owner, repo, key);
+        } else {
+          await this.services.envsClient.deleteRepoVariable(owner, repo, key);
+        }
+      }
+    } catch (err) {
+      return textResult(`Failed to delete ${sensitive ? 'secret' : 'variable'} "${key}": ${String(err)}`);
+    }
+
+    const where = scope === 'environment' ? `environment "${environment}"` : 'repository';
+    return textResult(`Deleted ${sensitive ? 'secret' : 'variable'} \`${key}\` from ${where} of \`${owner}/${repo}\`.`);
+  }
+
+  prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<DeleteVariableInput>,
+    _token: vscode.CancellationToken,
+  ): vscode.PreparedToolInvocation {
+    const i = options.input;
+    const where = i.scope === 'environment' ? `env "${i.environment}"` : 'repository';
+    return {
+      invocationMessage: `Deleting ${i.sensitive ? 'secret' : 'variable'} ${i.key} from ${where}`,
+      confirmationMessages: {
+        title: `Delete ${i.sensitive ? 'secret' : 'variable'}`,
+        message: new vscode.MarkdownString(
+          `Permanently delete ${i.sensitive ? 'secret' : 'variable'} \`${i.key}\` from ${where}? This cannot be undone.`,
+        ),
+      },
+    };
+  }
+}
+
+// ─── terraform_resolve_variable ──────────────────────────────────────────────
+
+export class ResolveVariableTool implements vscode.LanguageModelTool<ResolveVariableInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ResolveVariableInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ResolveVariableInputSchema, options.input, 'terraform_resolve_variable');
+    if (!v.ok) return v.result;
+
+    const ctx = await getRepoContext(this.services);
+    if (!ctx) return textResult('No active workspace config (need owner/repo).');
+    const { owner, repo } = ctx;
+    const { key, environment } = v.value;
+
+    const sources: string[] = [];
+    try {
+      const orgVars = await this.services.envsClient.listOrgVariables(owner);
+      if (orgVars.find(x => x.name === key)) sources.push(`org:${owner}`);
+    } catch { /* scope unavailable */ }
+    try {
+      const repoVars = await this.services.envsClient.listRepoVariables(owner, repo);
+      if (repoVars.find(x => x.name === key)) sources.push(`repo:${owner}/${repo}`);
+    } catch { /* scope unavailable */ }
+    if (environment) {
+      try {
+        const envVars = await this.services.envsClient.listEnvironmentVariables(owner, repo, environment);
+        if (envVars.find(x => x.name === key)) sources.push(`env:${environment}`);
+      } catch { /* scope unavailable */ }
+    }
+
+    if (sources.length === 0) {
+      return textResult(
+        `Variable \`${key}\` not found in org/repo${environment ? '/env' : ''} scopes for \`${owner}/${repo}\`.`,
+      );
+    }
+    const winner = sources[sources.length - 1];
+    return textResult(
+      `Variable \`${key}\` is defined in: ${sources.join(' → ')}.\n\n**Effective source:** \`${winner}\` (most specific scope wins at runtime).`,
+    );
+  }
+}
+
+// ─── terraform_review_deployment ─────────────────────────────────────────────
+
+class ReviewDeploymentTool implements vscode.LanguageModelTool<ReviewDeploymentInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ReviewDeploymentInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ReviewDeploymentInputSchema, options.input, 'terraform_review_deployment');
+    if (!v.ok) return v.result;
+
+    const ctx = await getRepoContext(this.services);
+    if (!ctx) return textResult('No active workspace config (need owner/repo).');
+    const { owner, repo } = ctx;
+    const { runId, state, environments, comment } = v.value;
+
+    const pending = await this.services.actionsClient.listPendingDeployments(owner, repo, runId);
+    const approvable = pending.filter(p => p.current_user_can_approve);
+    if (approvable.length === 0) {
+      return textResult(`No pending deployments awaiting your review on run #${runId}.`);
+    }
+
+    const wanted = environments && environments.length > 0
+      ? approvable.filter(p => environments.includes(p.environment.name))
+      : approvable;
+
+    if (wanted.length === 0) {
+      const available = approvable.map(p => p.environment.name).join(', ');
+      return textResult(`None of the requested environments are pending. Available: ${available}.`);
+    }
+
+    const ok = await this.services.actionsClient.reviewDeployments(
+      owner, repo, runId, wanted.map(w => w.environment.id), state, comment ?? '',
+    );
+    if (!ok) return textResult(`Failed to ${state} deployment(s) on run #${runId}.`);
+    return textResult(
+      `${state === 'approved' ? 'Approved' : 'Rejected'} deployment(s) on run #${runId} for: ${wanted.map(w => w.environment.name).join(', ')}.`,
+    );
+  }
+
+  prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<ReviewDeploymentInput>,
+    _token: vscode.CancellationToken,
+  ): vscode.PreparedToolInvocation {
+    return {
+      invocationMessage: `${options.input.state === 'approved' ? 'Approving' : 'Rejecting'} deployment on run #${options.input.runId}`,
+      confirmationMessages: {
+        title: `${options.input.state === 'approved' ? 'Approve' : 'Reject'} deployment`,
+        message: new vscode.MarkdownString(
+          `${options.input.state === 'approved' ? 'Approve' : 'Reject'} pending deployment(s) on run \`#${options.input.runId}\`?`,
+        ),
+      },
+    };
+  }
+}
+
+// ─── terraform_lint_workflows ────────────────────────────────────────────────
+
+class LintWorkflowsTool implements vscode.LanguageModelTool<LintWorkflowsInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<LintWorkflowsInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(LintWorkflowsInputSchema, options.input, 'terraform_lint_workflows');
+    if (!v.ok) return v.result;
+
+    if (!this.services.actionlint) {
+      return textResult('actionlint runner is not available in this session.');
+    }
+    const folder =
+      this.services.configManager.getActiveFolder() ?? vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+
+    const issues = await this.services.actionlint.run(folder, { silent: true, token });
+    if (token.isCancellationRequested) return cancelledResult();
+    if (issues.length === 0) {
+      return textResult(`actionlint: no issues found in \`${folder.name}/.github/workflows\`.`);
+    }
+    const lines = [`actionlint: **${issues.length}** issue(s) found.`, ''];
+    const byFile = new Map<string, typeof issues>();
+    for (const i of issues) {
+      const arr = byFile.get(i.filepath) ?? [];
+      arr.push(i);
+      byFile.set(i.filepath, arr);
+    }
+    for (const [file, list] of byFile) {
+      lines.push(`### \`${file}\``);
+      for (const i of list) {
+        lines.push(`- L${i.line}:${i.column} [${i.kind ?? 'actionlint'}] ${i.message}`);
+      }
+      lines.push('');
+    }
+    return cappedTextResult(lines.join('\n'), 'lint issues');
+  }
+}
+
+// ─── terraform_check_drift ───────────────────────────────────────────────────
+
+class CheckDriftTool implements vscode.LanguageModelTool<CheckDriftInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<CheckDriftInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(CheckDriftInputSchema, options.input, 'terraform_check_drift');
+    if (!v.ok) return v.result;
+
+    if (!this.services.drift) {
+      return textResult('Drift detector is not available in this session.');
+    }
+    const drifted = await this.services.drift.checkAll();
+    if (token.isCancellationRequested) return cancelledResult();
+    if (drifted.length === 0) {
+      return textResult('No drift detected across configured environments. All latest plan runs are clean.');
+    }
+    return textResult(
+      `Drift detected in **${drifted.length}** environment(s): ${drifted.map(e => `\`${e}\``).join(', ')}.\n\n` +
+      `These environments have pending Terraform changes (last plan exited with code 2). Run apply to reconcile, or inspect the plan output via \`terraform_get_run_status\`.`,
+    );
+  }
+}
+
+// ─── terraform_scaffold_backend ──────────────────────────────────────────────
+
+export class ScaffoldBackendTool implements vscode.LanguageModelTool<ScaffoldBackendInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldBackendInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldBackendInputSchema, options.input, 'terraform_scaffold_backend');
+    if (!v.ok) return v.result;
+    const tf = backendBootstrapTf(v.value);
+    return textResult(
+      `Generated S3 + DynamoDB backend bootstrap Terraform for bucket \`${v.value.bucketName}\` in \`${v.value.region}\`:\n\n\`\`\`hcl\n${tf}\n\`\`\``,
+    );
+  }
+}
+
+// ─── terraform_scaffold_oidc_trust ───────────────────────────────────────────
+
+class ScaffoldOidcTrustTool implements vscode.LanguageModelTool<ScaffoldOidcTrustInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldOidcTrustInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldOidcTrustInputSchema, options.input, 'terraform_scaffold_oidc_trust');
+    if (!v.ok) return v.result;
+    const hostname = await this.services.auth.resolveHostname();
+    const inputs = {
+      ...v.value,
+      oidcProvider: v.value.oidcProvider ?? defaultOidcProvider(hostname),
+    };
+    const json = oidcTrustPolicy(inputs);
+    const scope = `${v.value.githubOrg}/${v.value.repo ?? '*'}${v.value.environment ? `:env:${v.value.environment}` : ''}`;
+    return textResult(
+      `Generated GitHub OIDC IAM trust policy for AWS account \`${v.value.awsAccountId}\` scoped to \`${scope}\` (issuer: \`${inputs.oidcProvider}\`):\n\n\`\`\`json\n${json}\n\`\`\``,
+    );
+  }
+}
+
+// ─── terraform_scaffold_from_template ────────────────────────────────────────
+
+class ScaffoldFromTemplateTool implements vscode.LanguageModelTool<ScaffoldFromTemplateInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<ScaffoldFromTemplateInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.PreparedToolInvocation> {
+    const i = options.input;
+    const owner = i.newRepoOwner ?? '<your-account>';
+    return {
+      invocationMessage: `Generating ${owner}/${i.newRepoName} from template ${i.templateOwner}/${i.templateRepo}…`,
+      confirmationMessages: {
+        title: 'Create repository from template',
+        message: new vscode.MarkdownString(
+          `Create **${owner}/${i.newRepoName}** from template **${i.templateOwner}/${i.templateRepo}**?\n\n` +
+          `- Visibility: ${i.privateRepo === false ? 'public' : 'private (default)'}\n` +
+          `- All branches: ${i.includeAllBranches ? 'yes' : 'no'}\n\n` +
+          `This action creates a new repository on GitHub under the specified owner.`,
+        ),
+      },
+    };
+  }
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldFromTemplateInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldFromTemplateInputSchema, options.input, 'terraform_scaffold_from_template');
+    if (!v.ok) return v.result;
+    const i = v.value;
+
+    const body: Record<string, unknown> = {
+      name: i.newRepoName,
+      private: i.privateRepo ?? true,
+      include_all_branches: i.includeAllBranches ?? false,
+    };
+    if (i.newRepoOwner) body.owner = i.newRepoOwner;
+    if (i.description) body.description = i.description;
+
+    try {
+      const res = await this.services.auth.fetch(
+        `${this.services.auth.apiBaseUrl}/repos/${i.templateOwner}/${i.templateRepo}/generate`,
+        {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return textResult(
+          `GitHub API returned HTTP ${res.status} when generating from template:\n\n\`\`\`\n${text.slice(0, 2000)}\n\`\`\`\n\n` +
+          `Common causes: template repo is not marked as a template, the new repo name already exists, or the token lacks the \`repo\` scope on the target owner.`,
+        );
+      }
+      const data = (await res.json()) as { html_url?: string; full_name?: string; clone_url?: string };
+      return textResult(
+        `✅ Created **${data.full_name ?? i.newRepoName}** from template \`${i.templateOwner}/${i.templateRepo}\`.\n\n` +
+        `- URL: ${data.html_url ?? '(unknown)'}\n` +
+        `- Clone: \`${data.clone_url ?? '(unknown)'}\`\n\n` +
+        `Next: \`git clone ${data.clone_url ?? '…'}\`, then run **Terraform: Configure Workspace** to wire it into this extension.`,
+      );
+    } catch (err) {
+      return textResult(`Network error generating from template: ${String(err)}`);
+    }
+  }
+}
+
+// ─── terraform_scaffold_module_repo ───────────────────────────────────
+export class ScaffoldModuleRepoTool implements vscode.LanguageModelTool<ScaffoldModuleRepoInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<ScaffoldModuleRepoInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.PreparedToolInvocation> {
+    const i = options.input;
+    const target = i.targetDirectory && i.targetDirectory.trim().length > 0
+      ? i.targetDirectory
+      : '<workspace root>';
+    return {
+      invocationMessage: `Scaffolding Terraform module repo \`${i.moduleName}\` (${i.provider}) in ${target}\u2026`,
+      confirmationMessages: {
+        title: 'Scaffold Terraform module repo',
+        message: new vscode.MarkdownString(
+          `Create the standard Terraform module skeleton (\`main.tf\`, \`variables.tf\`, \`outputs.tf\`, \`versions.tf\`, \`examples/\`, \`README.md\` with terraform-docs markers, \`.gitignore\`) for **${i.moduleName}** under \`${target}\`?\n\n` +
+          `- Provider: ${i.provider}\n` +
+          `- Examples: ${(i.exampleNames && i.exampleNames.length ? i.exampleNames : ['basic']).join(', ')}\n` +
+          `- Devcontainer: ${i.includeDevcontainer ? 'yes' : 'no'}\n` +
+          `- Overwrite existing files: ${i.overwrite ? 'yes' : 'no (existing files will be skipped)'}\n\n` +
+          `Files are written to disk. Existing files are skipped unless \`overwrite\` is true.`,
+        ),
+      },
+    };
+  }
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldModuleRepoInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldModuleRepoInputSchema, options.input, 'terraform_scaffold_module_repo');
+    if (!v.ok) return v.result;
+    const i = v.value;
+
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return textResult(
+        'No workspace folder open. Open a folder first \u2014 the module skeleton is written under the active workspace folder, ' +
+        'or under `targetDirectory` (relative to it) if you supply one.',
+      );
+    }
+    const baseFolder = this.services.configManager.getActiveFolder() ?? folders[0];
+
+    let targetUri = baseFolder.uri;
+    if (i.targetDirectory && i.targetDirectory.trim().length > 0) {
+      const rel = i.targetDirectory.trim();
+      // Reject path traversal — the tool may be invoked by an LM, so be strict.
+      if (rel.startsWith('/') || rel.startsWith('\\') || rel.split(/[\\/]+/).includes('..')) {
+        return textResult(
+          `Refusing to scaffold to \`${rel}\`: path must be relative to the workspace folder and may not contain \`..\` segments.`,
+        );
+      }
+      targetUri = vscode.Uri.joinPath(baseFolder.uri, ...rel.split(/[\\/]+/));
+    }
+
+    try {
+      const result = await writeModuleRepoFiles(
+        targetUri,
+        {
+          moduleName: i.moduleName,
+          provider: i.provider,
+          description: i.description,
+          exampleNames: i.exampleNames,
+          includeDevcontainer: i.includeDevcontainer,
+          requiredVersion: i.requiredVersion,
+        },
+        i.overwrite ?? false,
+      );
+
+      const lines: string[] = [];
+      lines.push(`\u2705 Scaffolded Terraform module **${i.moduleName}** (provider: \`${i.provider}\`) at \`${targetUri.fsPath}\`.`);
+      if (result.written.length) {
+        lines.push('', `Wrote ${result.written.length} file(s):`, ...result.written.map(p => `- \`${p}\``));
+      }
+      if (result.overwritten.length) {
+        lines.push('', `Overwrote ${result.overwritten.length} file(s):`, ...result.overwritten.map(p => `- \`${p}\``));
+      }
+      if (result.skipped.length) {
+        lines.push(
+          '',
+          `Skipped ${result.skipped.length} existing file(s) (re-run with \`overwrite: true\` to replace):`,
+          ...result.skipped.map(p => `- \`${p}\``),
+        );
+      }
+      lines.push(
+        '',
+        'Next steps:',
+        '1. Fill in `variables.tf` / `outputs.tf` and add resources to `main.tf`.',
+        '2. Wire CI: run **Terraform: Configure Workspace** to declare environments and sync workflows via `terraform_sync_workflows`.',
+        '3. Generate the README inputs/outputs table with `terraform-docs markdown table --output-file README.md --output-mode inject .`.',
+      );
+      return textResult(lines.join('\n'));
+    } catch (err) {
+      return textResult(`Error scaffolding module repo: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }

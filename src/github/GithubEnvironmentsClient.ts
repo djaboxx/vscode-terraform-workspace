@@ -54,7 +54,7 @@ export class GithubEnvironmentsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments?per_page=100`,
       { headers: this.headers(token) }
     );
@@ -101,7 +101,7 @@ export class GithubEnvironmentsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repositories/${repoId}/environments/${encodeURIComponent(environment)}/secrets`,
       { headers: this.headers(token) }
     );
@@ -138,7 +138,7 @@ export class GithubEnvironmentsClient {
     const pubKey = await this.getEnvironmentPublicKey(repoId, environment, token);
     const encryptedValue = await encryptSecret(pubKey.key, value);
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repositories/${repoId}/environments/${encodeURIComponent(environment)}/secrets/${encodeURIComponent(name)}`,
       {
         method: 'PUT',
@@ -173,7 +173,7 @@ export class GithubEnvironmentsClient {
       return;
     }
 
-    await fetch(
+    await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repositories/${repoId}/environments/${encodeURIComponent(environment)}/secrets/${encodeURIComponent(name)}`,
       { method: 'DELETE', headers: this.headers(token) }
     );
@@ -192,7 +192,7 @@ export class GithubEnvironmentsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments/${encodeURIComponent(environment)}/variables?per_page=100`,
       { headers: this.headers(token) }
     );
@@ -221,14 +221,14 @@ export class GithubEnvironmentsClient {
     // Try PATCH first (update), then POST (create)
     const baseUrl = `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments/${encodeURIComponent(environment)}/variables`;
 
-    let response = await fetch(`${baseUrl}/${encodeURIComponent(name)}`, {
+    let response = await this.auth.fetch(`${baseUrl}/${encodeURIComponent(name)}`, {
       method: 'PATCH',
       headers: this.headers(token),
       body: JSON.stringify({ name, value }),
     });
 
     if (response.status === 404) {
-      response = await fetch(baseUrl, {
+      response = await this.auth.fetch(baseUrl, {
         method: 'POST',
         headers: this.headers(token),
         body: JSON.stringify({ name, value }),
@@ -253,7 +253,7 @@ export class GithubEnvironmentsClient {
       return;
     }
 
-    await fetch(
+    await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments/${encodeURIComponent(environment)}/variables/${encodeURIComponent(name)}`,
       { method: 'DELETE', headers: this.headers(token) }
     );
@@ -268,7 +268,7 @@ export class GithubEnvironmentsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/orgs/${org}/actions/secrets?per_page=100`,
       { headers: this.headers(token) }
     );
@@ -288,7 +288,7 @@ export class GithubEnvironmentsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/orgs/${org}/actions/variables?per_page=100`,
       { headers: this.headers(token) }
     );
@@ -311,7 +311,7 @@ export class GithubEnvironmentsClient {
     const pubKey = await this.getOrgPublicKey(org, token);
     const encryptedValue = await encryptSecret(pubKey.key, value);
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/orgs/${org}/actions/secrets/${encodeURIComponent(name)}`,
       {
         method: 'PUT',
@@ -339,14 +339,14 @@ export class GithubEnvironmentsClient {
 
     const baseUrl = `${this.auth.apiBaseUrl}/orgs/${org}/actions/variables`;
 
-    let response = await fetch(`${baseUrl}/${encodeURIComponent(name)}`, {
+    let response = await this.auth.fetch(`${baseUrl}/${encodeURIComponent(name)}`, {
       method: 'PATCH',
       headers: this.headers(token),
       body: JSON.stringify({ name, value, visibility: 'all' }),
     });
 
     if (response.status === 404) {
-      response = await fetch(baseUrl, {
+      response = await this.auth.fetch(baseUrl, {
         method: 'POST',
         headers: this.headers(token),
         body: JSON.stringify({ name, value, visibility: 'all' }),
@@ -411,7 +411,7 @@ export class GithubEnvironmentsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/secrets?per_page=100`,
       { headers: this.headers(token) }
     );
@@ -434,7 +434,7 @@ export class GithubEnvironmentsClient {
     const pubKey = await this.getRepoPublicKey(owner, repo, token);
     const encryptedValue = await encryptSecret(pubKey.key, value);
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/secrets/${encodeURIComponent(name)}`,
       {
         method: 'PUT',
@@ -456,7 +456,7 @@ export class GithubEnvironmentsClient {
       return;
     }
 
-    await fetch(
+    await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/secrets/${encodeURIComponent(name)}`,
       { method: 'DELETE', headers: this.headers(token) }
     );
@@ -471,7 +471,7 @@ export class GithubEnvironmentsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/variables?per_page=100`,
       { headers: this.headers(token) }
     );
@@ -493,14 +493,14 @@ export class GithubEnvironmentsClient {
 
     const baseUrl = `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/variables`;
 
-    let response = await fetch(`${baseUrl}/${encodeURIComponent(name)}`, {
+    let response = await this.auth.fetch(`${baseUrl}/${encodeURIComponent(name)}`, {
       method: 'PATCH',
       headers: this.headers(token),
       body: JSON.stringify({ name, value }),
     });
 
     if (response.status === 404) {
-      response = await fetch(baseUrl, {
+      response = await this.auth.fetch(baseUrl, {
         method: 'POST',
         headers: this.headers(token),
         body: JSON.stringify({ name, value }),
@@ -520,7 +520,7 @@ export class GithubEnvironmentsClient {
       return;
     }
 
-    await fetch(
+    await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/variables/${encodeURIComponent(name)}`,
       { method: 'DELETE', headers: this.headers(token) }
     );
@@ -529,7 +529,7 @@ export class GithubEnvironmentsClient {
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
   private async getRepoPublicKey(owner: string, repo: string, token: string): Promise<GhaRepoPublicKey> {
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/secrets/public-key`,
       { headers: this.headers(token) }
     );
@@ -542,7 +542,7 @@ export class GithubEnvironmentsClient {
   }
 
   private async getRepoId(owner: string, repo: string, token: string): Promise<number | undefined> {
-    const response = await fetch(`${this.auth.apiBaseUrl}/repos/${owner}/${repo}`, {
+    const response = await this.auth.fetch(`${this.auth.apiBaseUrl}/repos/${owner}/${repo}`, {
       headers: this.headers(token),
     });
 
@@ -559,7 +559,7 @@ export class GithubEnvironmentsClient {
     environment: string,
     token: string
   ): Promise<GhaRepoPublicKey> {
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/repositories/${repoId}/environments/${encodeURIComponent(environment)}/secrets/public-key`,
       { headers: this.headers(token) }
     );
@@ -572,7 +572,7 @@ export class GithubEnvironmentsClient {
   }
 
   private async getOrgPublicKey(org: string, token: string): Promise<GhaRepoPublicKey> {
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/orgs/${org}/actions/secrets/public-key`,
       { headers: this.headers(token) }
     );
@@ -593,17 +593,26 @@ export class GithubEnvironmentsClient {
  * Encrypts a secret value using the GitHub repo/org public key.
  * GitHub requires libsodium sealed box encryption (X25519 + XSalsa20-Poly1305).
  *
- * Uses tweetsodium (pure JS, no native deps) for compatibility in VS Code extensions.
+ * Uses libsodium-wrappers (maintained, WASM-backed, no native deps).
  */
-async function encryptSecret(base64PublicKey: string, secretValue: string): Promise<string> {
-  // Dynamic import keeps tweetsodium out of the startup path
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const sodium = require('tweetsodium') as {
-    seal: (message: Uint8Array, recipientPublicKey: Uint8Array) => Uint8Array;
-  };
+let sodiumPromise: Promise<typeof import('libsodium-wrappers')> | undefined;
 
-  const publicKeyBytes = Buffer.from(base64PublicKey, 'base64');
-  const messageBytes = Buffer.from(secretValue, 'utf-8');
-  const encryptedBytes = sodium.seal(messageBytes, publicKeyBytes);
-  return Buffer.from(encryptedBytes).toString('base64');
+async function loadSodium(): Promise<typeof import('libsodium-wrappers')> {
+  if (!sodiumPromise) {
+    sodiumPromise = (async () => {
+      // Dynamic import keeps libsodium out of the startup path (it loads a WASM blob)
+      const mod = await import('libsodium-wrappers');
+      await mod.ready;
+      return mod;
+    })();
+  }
+  return sodiumPromise;
+}
+
+async function encryptSecret(base64PublicKey: string, secretValue: string): Promise<string> {
+  const sodium = await loadSodium();
+  const publicKeyBytes = sodium.from_base64(base64PublicKey, sodium.base64_variants.ORIGINAL);
+  const messageBytes = sodium.from_string(secretValue);
+  const encryptedBytes = sodium.crypto_box_seal(messageBytes, publicKeyBytes);
+  return sodium.to_base64(encryptedBytes, sodium.base64_variants.ORIGINAL);
 }

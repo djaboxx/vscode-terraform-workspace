@@ -1,11 +1,37 @@
+# ── Default excludes ────────────────────────────────────────────────────────
 node_modules
-!node_modules/better-sqlite3
-!node_modules/bindings
-!node_modules/file-uri-to-path
 .vscode-test
 *.vsix
 out
+src
+test
 .terraform
 *.tfstate
 *.tfstate.backup
 .terraform.lock.hcl
+.git
+.github
+.gitignore
+.eslintrc*
+tsconfig.json
+esbuild.js
+**/*.map
+**/*.ts
+!dist/**/*.js
+
+# ── Native module: keep only better-sqlite3 + its deps ──────────────────────
+!node_modules/better-sqlite3/**
+!node_modules/bindings/**
+!node_modules/file-uri-to-path/**
+
+# ── libsodium-wrappers loads its own .wasm at runtime ───────────────────────
+!node_modules/libsodium-wrappers/**
+!node_modules/libsodium/**
+
+# ── Runtime assets the extension reads at activation ────────────────────────
+!templates/**
+!schemas/**
+!images/**
+!README.md
+!LICENSE
+!package.json

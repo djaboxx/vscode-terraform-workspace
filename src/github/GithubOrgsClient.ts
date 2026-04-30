@@ -1,5 +1,5 @@
 import { GithubAuthProvider } from '../auth/GithubAuthProvider.js';
-import { TfVariableSet, TfVariable, VariableScope } from '../types/index.js';
+import { TfVariableSet, VariableScope } from '../types/index.js';
 import { GithubEnvironmentsClient } from './GithubEnvironmentsClient.js';
 
 
@@ -58,7 +58,7 @@ export class GithubOrgsClient {
       return [];
     }
 
-    const response = await fetch(`${this.auth.apiBaseUrl}/orgs/${org}/teams?per_page=100`, {
+    const response = await this.auth.fetch(`${this.auth.apiBaseUrl}/orgs/${org}/teams?per_page=100`, {
       headers: this.headers(token),
     });
 
@@ -95,7 +95,7 @@ export class GithubOrgsClient {
       return [];
     }
 
-    const response = await fetch(
+    const response = await this.auth.fetch(
       `${this.auth.apiBaseUrl}/search/repositories?q=org:${org}+topic:terraform-managed&per_page=100`,
       { headers: this.headers(token) }
     );

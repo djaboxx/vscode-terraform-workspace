@@ -2,15 +2,25 @@
   "name": "terraform-workspace",
   "displayName": "Terraform Workspace",
   "description": "AI-powered Terraform workspace manager backed by GitHub Actions and HappyPathway infrastructure patterns",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "publisher": "HappyPathway",
+  "license": "MIT",
   "icon": "images/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/djaboxx/vscode-terraform-workspace"
   },
+  "bugs": {
+    "url": "https://github.com/djaboxx/vscode-terraform-workspace/issues"
+  },
+  "homepage": "https://github.com/djaboxx/vscode-terraform-workspace#readme",
+  "qna": "https://github.com/djaboxx/vscode-terraform-workspace/discussions",
+  "galleryBanner": {
+    "color": "#1e293b",
+    "theme": "dark"
+  },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Other",
@@ -30,6 +40,12 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "jsonValidation": [
+      {
+        "fileMatch": ".vscode/terraform-workspace.json",
+        "url": "./schemas/terraform-workspace.schema.json"
+      }
+    ],
     "chatParticipants": [
       {
         "id": "terraform.assistant",
@@ -281,6 +297,456 @@
             }
           }
         }
+      },
+      {
+        "name": "terraform_read_config",
+        "displayName": "Read Terraform Workspace Config",
+        "modelDescription": "Returns the full contents of .vscode/terraform-workspace.json for the active workspace folder as JSON. Use this before making config changes so you know the current state.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "terraform_update_config",
+        "displayName": "Update Terraform Workspace Config",
+        "modelDescription": "Merges a partial patch into .vscode/terraform-workspace.json. Supports updating stateConfig (bucket, region, keyPrefix, dynamodbTable), compositeActions (action refs), compositeActionOrg, and repo metadata. Use terraform_read_config first to see current values.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "stateConfig": {
+              "type": "object",
+              "description": "Partial state backend config to merge in.",
+              "properties": {
+                "bucket": {
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                },
+                "keyPrefix": {
+                  "type": "string"
+                },
+                "dynamodbTable": {
+                  "type": "string"
+                },
+                "setBackend": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "compositeActions": {
+              "type": "object",
+              "description": "Partial composite action refs to merge in.",
+              "properties": {
+                "checkout": {
+                  "type": "string"
+                },
+                "awsAuth": {
+                  "type": "string"
+                },
+                "ghAuth": {
+                  "type": "string"
+                },
+                "setupTerraform": {
+                  "type": "string"
+                },
+                "terraformInit": {
+                  "type": "string"
+                },
+                "terraformPlan": {
+                  "type": "string"
+                },
+                "terraformApply": {
+                  "type": "string"
+                },
+                "s3Cleanup": {
+                  "type": "string"
+                }
+              }
+            },
+            "compositeActionOrg": {
+              "type": "string",
+              "description": "GitHub org that owns the composite action repos."
+            },
+            "repo": {
+              "type": "object",
+              "description": "Repo metadata fields to update.",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "repoOrg": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "isPrivate": {
+                  "type": "boolean"
+                },
+                "enforcePrs": {
+                  "type": "boolean"
+                },
+                "createCodeowners": {
+                  "type": "boolean"
+                },
+                "codeownersTeam": {
+                  "type": "string"
+                },
+                "adminTeams": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "repoTopics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_sync_workflows",
+        "displayName": "Sync Terraform Workflows",
+        "modelDescription": "Generates GitHub Actions plan and apply workflow YAML files for every environment in the workspace config and writes them to .github/workflows/. Fetches live variable and secret names from GitHub to ensure every secret is explicitly referenced. Run this after terraform_update_config or whenever environments change.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "terraform_get_run_status",
+        "displayName": "Get Terraform Run Status",
+        "modelDescription": "Returns the most recent plan and apply workflow run statuses (status, conclusion, URL) for one or all configured workspaces. Use to check whether infra is in sync or a run is in progress.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "workspace": {
+              "type": "string",
+              "description": "Specific workspace (GitHub Environment) name. Omit to check all environments."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max runs to return per workflow. Default 3."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_search_tf_code",
+        "displayName": "Search Terraform Code",
+        "modelDescription": "Searches the current GitHub org's repositories for Terraform code matching a query. Returns file paths, repo names, and code snippets. Use to find examples, check how a resource is used across the org, or discover existing module usage.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Free-text search query (e.g. 'aws_s3_bucket versioning', 'google_storage_bucket', 'module vpc')."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results to return (default 10, max 30)."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_discover_workspace",
+        "displayName": "Discover Terraform Workspace Defaults",
+        "modelDescription": "Auto-discovers reasonable defaults for the workspace config by scanning git remotes, .tf files (S3 backend, providers, regions, required_version), .tfvars files, .github/workflows YAML, and existing GitHub Environments. Returns a discovery summary AND a fully-populated suggested .vscode/terraform-workspace.json. Use this before asking the user for config values — most fields can be inferred. If `applyDefaults=true`, writes the config to disk; otherwise just returns it for review.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "subdirectory": {
+              "type": "string",
+              "description": "Optional subdirectory of the workspace folder to scan."
+            },
+            "applyDefaults": {
+              "type": "boolean",
+              "description": "If true, writes the suggested config to .vscode/terraform-workspace.json after discovery. Defaults to false."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_delete_variable",
+        "displayName": "Delete Variable or Secret",
+        "modelDescription": "Deletes a GitHub Actions variable or secret from the active repository or one of its environments. Set `sensitive=true` for secrets. For environment scope, supply `environment`. Requires user confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "scope",
+            "key"
+          ],
+          "properties": {
+            "scope": {
+              "type": "string",
+              "enum": [
+                "environment",
+                "repository"
+              ],
+              "description": "Where the variable lives."
+            },
+            "key": {
+              "type": "string",
+              "description": "Variable/secret name (env-var-style identifier)."
+            },
+            "environment": {
+              "type": "string",
+              "description": "Required when scope is 'environment'."
+            },
+            "sensitive": {
+              "type": "boolean",
+              "description": "True for secrets, false (default) for variables."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_resolve_variable",
+        "displayName": "Resolve Variable Source",
+        "modelDescription": "Traces where a GitHub Actions variable is defined across org/repo/environment scopes for the active workspace and reports the effective (most specific) source. Use to debug 'why does this var have that value?' questions.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "key"
+          ],
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Variable name to trace."
+            },
+            "environment": {
+              "type": "string",
+              "description": "Optional environment to include in the lookup."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_review_deployment",
+        "displayName": "Approve or Reject Deployment",
+        "modelDescription": "Approves or rejects pending GitHub Actions deployment(s) gated by environment protection rules. Pass `runId` from a workflow run, `state` ('approved' or 'rejected'), an optional list of `environments` to filter to, and an optional `comment`. Requires user confirmation.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "runId",
+            "state"
+          ],
+          "properties": {
+            "runId": {
+              "type": "number",
+              "description": "GitHub Actions workflow run ID."
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "approved",
+                "rejected"
+              ],
+              "description": "Decision."
+            },
+            "environments": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional list of environment names to act on. Defaults to all approvable."
+            },
+            "comment": {
+              "type": "string",
+              "description": "Optional audit-log comment."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_lint_workflows",
+        "displayName": "Lint GitHub Workflows",
+        "modelDescription": "Runs `actionlint` over the active folder's `.github/workflows/*.{yml,yaml}` and returns a structured list of issues (file, line, kind, message). Requires `actionlint` on PATH.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "terraform_check_drift",
+        "displayName": "Check Terraform Drift",
+        "modelDescription": "Inspects the latest plan workflow run for each configured environment and returns environments whose plan exited with code 2 (pending changes / drift). Use to find environments that need an apply.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "terraform_scaffold_backend",
+        "displayName": "Scaffold S3 Terraform Backend",
+        "modelDescription": "Generates Terraform code for an S3 state bucket + DynamoDB lock table (the bootstrap a team writes once per AWS account). Returns the HCL — does not apply it. Use to bootstrap remote state for a new account.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "bucketName",
+            "region",
+            "dynamodbTable"
+          ],
+          "properties": {
+            "bucketName": {
+              "type": "string",
+              "description": "Globally-unique S3 bucket name."
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region (e.g. us-east-1)."
+            },
+            "dynamodbTable": {
+              "type": "string",
+              "description": "Name for the DynamoDB lock table."
+            },
+            "kmsKeyAlias": {
+              "type": "string",
+              "description": "Optional KMS key alias for SSE-KMS encryption (without 'alias/' prefix). Defaults to AES256."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_scaffold_oidc_trust",
+        "displayName": "Scaffold GitHub OIDC Trust Policy",
+        "modelDescription": "Generates an AWS IAM trust policy JSON allowing GitHub Actions in a specific org/repo/environment to AssumeRoleWithWebIdentity via OIDC. Returns the JSON — does not apply it.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "awsAccountId",
+            "githubOrg"
+          ],
+          "properties": {
+            "awsAccountId": {
+              "type": "string",
+              "description": "12-digit AWS account ID."
+            },
+            "githubOrg": {
+              "type": "string",
+              "description": "GitHub org/owner that will assume the role."
+            },
+            "repo": {
+              "type": "string",
+              "description": "Optional repo name; omit to allow any repo in the org."
+            },
+            "environment": {
+              "type": "string",
+              "description": "Optional environment name; omit to allow any environment."
+            },
+            "oidcProvider": {
+              "type": "string",
+              "description": "Override the default OIDC provider host (defaults to token.actions.githubusercontent.com)."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_scaffold_from_template",
+        "displayName": "Scaffold Repo From Template",
+        "modelDescription": "Creates a new GitHub repository from a template repository via POST /repos/{template_owner}/{template_repo}/generate. Use this for the 'start a new module / service from a template' workflow. Returns the new repo's URL and clone URL. Requires the 'repo' scope on the target owner.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "templateOwner",
+            "templateRepo",
+            "newRepoName"
+          ],
+          "properties": {
+            "templateOwner": {
+              "type": "string",
+              "description": "Owner of the template repository (user or org)."
+            },
+            "templateRepo": {
+              "type": "string",
+              "description": "Name of the template repository. Must be marked as a template on GitHub."
+            },
+            "newRepoName": {
+              "type": "string",
+              "description": "Name for the new repository.",
+              "pattern": "^[a-zA-Z0-9._-]+$"
+            },
+            "newRepoOwner": {
+              "type": "string",
+              "description": "Owner for the new repo. Defaults to the authenticated user; supply an org name to create under an org."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional description for the new repository."
+            },
+            "privateRepo": {
+              "type": "boolean",
+              "description": "Create as private. Default: true."
+            },
+            "includeAllBranches": {
+              "type": "boolean",
+              "description": "Include all branches from the template, not just the default branch. Default: false."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_scaffold_module_repo",
+        "displayName": "Scaffold Terraform Module Repo",
+        "modelDescription": "Generates the standard Terraform *module* repo skeleton (USAGE.md Pattern 1) into the active workspace folder: main.tf, variables.tf, outputs.tf, versions.tf, examples/<name>/, README.md with terraform-docs markers, .gitignore, and .terraform-docs.yml. Use this when starting a new reusable module from scratch in an empty repo. For creating a GitHub repo from an existing template, use terraform_scaffold_from_template instead. Existing files are skipped unless 'overwrite' is true.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "moduleName",
+            "provider"
+          ],
+          "properties": {
+            "moduleName": {
+              "type": "string",
+              "description": "Module repo name, e.g. 'terraform-aws-vpc'. Drives README headings and the local module name in examples.",
+              "pattern": "^[a-zA-Z0-9._-]+$"
+            },
+            "provider": {
+              "type": "string",
+              "description": "Primary provider key, e.g. 'aws', 'azurerm', 'google', 'kubernetes'. Drives versions.tf required_providers.",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional one-line description used in the README tagline."
+            },
+            "exampleNames": {
+              "type": "array",
+              "description": "Folder names under examples/ to scaffold. Defaults to ['basic'].",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9._-]+$"
+              }
+            },
+            "includeDevcontainer": {
+              "type": "boolean",
+              "description": "Also write .devcontainer/devcontainer.json for VS Code Dev Containers. Default: false."
+            },
+            "requiredVersion": {
+              "type": "string",
+              "description": "Terraform/OpenTofu required_version constraint. Default: '>= 1.5.0'."
+            },
+            "targetDirectory": {
+              "type": "string",
+              "description": "Subdirectory of the active workspace folder to scaffold into. Defaults to the workspace root. Path traversal ('..') is rejected."
+            },
+            "overwrite": {
+              "type": "boolean",
+              "description": "If true, replace existing files. If false (default), existing files are reported as skipped."
+            }
+          }
+        }
       }
     ],
     "viewsContainers": {
@@ -395,6 +861,102 @@
         "title": "Sync Workflows",
         "icon": "$(sync)",
         "category": "Terraform"
+      },
+      {
+        "command": "terraform.lintWorkflows",
+        "title": "Lint Workflows (actionlint)",
+        "icon": "$(check)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.checkDrift",
+        "title": "Check Drift",
+        "icon": "$(diff)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.scaffoldBackend",
+        "title": "Scaffold S3+DynamoDB Backend",
+        "icon": "$(database)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.discoverDefaults",
+        "title": "Auto-discover Workspace Defaults",
+        "icon": "$(sparkle)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.scaffoldOidcTrust",
+        "title": "Generate OIDC Trust Policy",
+        "icon": "$(shield)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.scaffoldFromTemplate",
+        "title": "Scaffold Repo From Template…",
+        "icon": "$(repo-create)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.composeModules",
+        "title": "Compose Terraform Modules…",
+        "icon": "$(combine)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.agent.start",
+        "title": "Agent: Start Autonomous Loop",
+        "icon": "$(robot)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.agent.stop",
+        "title": "Agent: Stop Autonomous Loop",
+        "icon": "$(circle-slash)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.agent.runNow",
+        "title": "Agent: Run One Tick Now",
+        "icon": "$(sync)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.agent.showStatus",
+        "title": "Agent: Show Output Log",
+        "icon": "$(output)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.agent.showMemory",
+        "title": "Agent: Show Memory",
+        "icon": "$(notebook)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.agent.learnNow",
+        "title": "Agent: Learn From Repos Now",
+        "icon": "$(cloud-download)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.diagnoseAuth",
+        "title": "Diagnose GitHub Auth Scopes",
+        "icon": "$(verified)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.resolveVariable",
+        "title": "Resolve Variable Source",
+        "icon": "$(search)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.reviewDeployment",
+        "title": "Review Deployment",
+        "icon": "$(thumbsup)",
+        "category": "Terraform"
       }
     ],
     "menus": {
@@ -471,6 +1033,79 @@
           "description": "Default GitHub organization for new workspaces",
           "default": "HappyPathway"
         },
+        "terraformWorkspace.agent.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the autonomous agent. Polls GitHub Issues for the configured trigger label and attempts to resolve them via the registered Terraform tools."
+        },
+        "terraformWorkspace.agent.owners": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "GitHub orgs/users whose issue queues the agent should scan."
+        },
+        "terraformWorkspace.agent.triggerLabel": {
+          "type": "string",
+          "default": "agent",
+          "description": "Issue label that flags an issue for the autonomous agent."
+        },
+        "terraformWorkspace.agent.pollIntervalMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "How often the agent wakes itself up to scan the queue."
+        },
+        "terraformWorkspace.agent.runOnFocus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also wake the agent when VS Code regains focus."
+        },
+        "terraformWorkspace.agent.maxTasksPerTick": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "description": "Maximum tasks the agent will attempt in a single wake-up."
+        },
+        "terraformWorkspace.agent.maxIterations": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "description": "Hard ceiling on tool-call iterations per task to prevent runaway loops."
+        },
+        "terraformWorkspace.agent.autonomyLevel": {
+          "type": "string",
+          "enum": ["observe", "draft-pr", "merge"],
+          "default": "draft-pr",
+          "description": "How autonomously the agent acts. `observe` only records findings; `draft-pr` opens PRs for review; `merge` merges when confident."
+        },
+        "terraformWorkspace.agent.learner.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Continuously ingest knowledge from repos topic-tagged with the configured learning topic. Runs at the start of every agent tick."
+        },
+        "terraformWorkspace.agent.learner.owners": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["HappyPathway", "djaboxx"],
+          "description": "GitHub orgs/users to scan for learning-tagged repos."
+        },
+        "terraformWorkspace.agent.learner.topic": {
+          "type": "string",
+          "default": "learning",
+          "description": "GitHub repo topic that opts a repo into continuous knowledge ingestion."
+        },
+        "terraformWorkspace.agent.learner.reposPerTick": {
+          "type": "number",
+          "default": 25,
+          "minimum": 1,
+          "description": "Maximum repos the learner ingests per tick (across all owners)."
+        },
+        "terraformWorkspace.agent.learner.commitsPerRepo": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Maximum recent commits inspected per repo per tick."
+        },
         "terraformWorkspace.compositeActionOrg": {
           "type": "string",
           "description": "GitHub org containing composite action repos (aws-auth, gh-auth, terraform-init, etc.)",
@@ -491,36 +1126,163 @@
           "description": "Prefer OpenTofu (tofu) over Terraform CLI in generated workflows",
           "default": true
         },
+        "terraformWorkspace.useLocalActions": {
+          "type": "boolean",
+          "description": "Scaffold composite actions into the repo at .github/actions/* and reference them locally instead of pulling from an external GitHub org. Recommended.",
+          "default": true
+        },
+        "terraformWorkspace.autoSyncWorkflows": {
+          "type": "boolean",
+          "description": "Automatically regenerate workflows when .vscode/terraform-workspace.json changes.",
+          "default": true
+        },
         "terraformWorkspace.aiModel": {
           "type": "string",
           "description": "Language model family to use for code generation",
           "default": "gpt-4o"
+        },
+        "terraformWorkspace.driftCheckMinutes": {
+          "type": "number",
+          "description": "Minutes between automatic drift checks (0 disables the timer; the `Terraform: Check Drift` command still works on demand).",
+          "default": 0,
+          "minimum": 0
+        },
+        "terraformWorkspace.enableTelemetry": {
+          "type": "boolean",
+          "description": "Send anonymous usage telemetry. Off by default; respects VS Code's global telemetry setting.",
+          "default": false
         }
       }
-    }
+    },
+    "configurationDefaults": {
+      "[terraform]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true,
+        "editor.detectIndentation": false
+      },
+      "[terraform-vars]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+      }
+    },
+    "walkthroughs": [
+      {
+        "id": "terraform-workspace.getStarted",
+        "title": "Get Started with Terraform Workspace",
+        "description": "Bootstrap a Terraform repo from a template, then drive plans/applies through GitHub Actions with AI in the loop.",
+        "featuredFor": [
+          "**/*.tf",
+          "**/.github/workflows/terraform-*.yml",
+          "**/.vscode/terraform-workspace.json"
+        ],
+        "steps": [
+          {
+            "id": "scaffold",
+            "title": "Scaffold a new repo from a template",
+            "description": "Start here if you don't have a repo open yet. Generate a new GitHub repository from a template — no folder required.\n[Scaffold From Template](command:terraform.scaffoldFromTemplate)",
+            "media": {
+              "markdown": "media/walkthrough/scaffold.md"
+            }
+          },
+          {
+            "id": "auth",
+            "title": "Sign in & diagnose GitHub scopes",
+            "description": "This extension talks to GitHub for everything. Confirm your token has `repo`, `read:org`, and `workflow`.\n[Diagnose GitHub Auth Scopes](command:terraform.diagnoseAuth)",
+            "media": {
+              "markdown": "media/walkthrough/auth.md"
+            }
+          },
+          {
+            "id": "configure",
+            "title": "Configure your workspace",
+            "description": "Open the configuration panel to fill in repo, environments, and backend settings.\n[Configure Workspace](command:terraform.configureWorkspace)",
+            "media": {
+              "markdown": "media/walkthrough/configure.md"
+            }
+          },
+          {
+            "id": "oidc",
+            "title": "Wire OIDC trust & remote backend",
+            "description": "Generate the AWS IAM trust policy and the S3+DynamoDB backend HCL. No long-lived AWS keys.\n[Scaffold OIDC Trust](command:terraform.scaffoldOidcTrust)\n[Scaffold Backend](command:terraform.scaffoldBackend)",
+            "media": {
+              "markdown": "media/walkthrough/oidc.md"
+            }
+          },
+          {
+            "id": "sync",
+            "title": "Sync workflows",
+            "description": "Generate `.github/workflows/terraform-plan-*.yml` and `terraform-apply-*.yml` for every environment.\n[Sync Workflows](command:terraform.syncWorkflows)",
+            "media": {
+              "markdown": "media/walkthrough/sync.md"
+            }
+          },
+          {
+            "id": "lint",
+            "title": "Lint generated workflows",
+            "description": "Run `actionlint` over generated workflows to catch syntax issues before pushing.\n[Lint Workflows](command:terraform.lintWorkflows)",
+            "media": {
+              "markdown": "media/walkthrough/lint.md"
+            }
+          },
+          {
+            "id": "chat",
+            "title": "Operate via the chat participant",
+            "description": "Plans, variable resolution, drift checks, org-wide HCL search — all through `@terraform`.\n[Open Chat](command:workbench.action.chat.open?%7B%22query%22%3A%22%40terraform+%22%7D)",
+            "media": {
+              "markdown": "media/walkthrough/chat.md"
+            }
+          },
+          {
+            "id": "drift",
+            "title": "Check for drift",
+            "description": "Manually trigger a drift check across environments.\n[Check Drift](command:terraform.checkDrift)",
+            "media": {
+              "markdown": "media/walkthrough/drift.md"
+            }
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
+    "help": "node scripts/help.js",
     "vscode:prepublish": "npm run build",
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc --noEmit",
     "lint": "eslint src --ext ts",
-    "test": "node ./test/runTest.js",
-    "package": "vsce package"
+    "lint:fix": "eslint src --ext ts --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:watch": "vitest",
+    "test:vscode": "tsc -p test/vscode/tsconfig.json && node out/test-vscode/runTest.js",
+    "coverage": "vitest run --coverage",
+    "package": "vsce package",
+    "clean": "node -e \"const fs=require('fs');for(const p of ['dist','coverage','.vitest-cache']){try{fs.rmSync(p,{recursive:true,force:true})}catch{}};for(const f of fs.readdirSync('.')){if(f.endsWith('.vsix'))fs.rmSync(f)}\""
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.95.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^4.1.5",
     "@vscode/test-electron": "^2.3.9",
     "esbuild": "^0.20.0",
     "eslint": "^8.57.0",
-    "typescript": "^5.4.0"
+    "mocha": "^11.7.5",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.5"
   },
   "dependencies": {
+    "@types/libsodium-wrappers": "^0.7.14",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "better-sqlite3": "^12.9.0",
-    "tweetsodium": "^0.0.5"
+    "libsodium-wrappers": "^0.8.4"
   }
 }

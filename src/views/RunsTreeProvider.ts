@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
-import { TfRun, RunStatus, RunConclusion, RunType } from '../types/index.js';
+import { TfRun, RunType } from '../types/index.js';
 import { GithubActionsClient, GhaWorkflowRun } from '../github/GithubActionsClient.js';
 import { WorkspaceConfigManager } from '../config/WorkspaceConfigManager.js';
+import { RunHistoryStore } from '../cache/RunHistoryStore.js';
 
 export class RunTreeItem extends vscode.TreeItem {
   readonly run: TfRun;
@@ -44,6 +45,7 @@ export class RunsTreeProvider implements vscode.TreeDataProvider<RunTreeItem> {
   constructor(
     private readonly actionsClient: GithubActionsClient,
     private readonly configManager: WorkspaceConfigManager,
+    private readonly history?: RunHistoryStore,
   ) {}
 
   refresh(): void {
@@ -69,12 +71,25 @@ export class RunsTreeProvider implements vscode.TreeDataProvider<RunTreeItem> {
       const runs = await this.actionsClient.listRepoRuns(owner, repo, 20);
       const repoSlug = `${owner}/${repo}`;
 
-      return runs.map(r => {
+      const tfRuns = runs.map(r => {
         const type = inferRunType(r);
-        const tfRun = this.actionsClient.toTfRun(r, repoSlug, repoSlug, type);
-        return new RunTreeItem(tfRun);
+        return this.actionsClient.toTfRun(r, repoSlug, repoSlug, type);
       });
+
+      // Persist live runs and merge with historical entries we may not see
+      // anymore (GitHub paginates aggressively).
+      if (this.history) {
+        this.history.upsertMany(tfRuns);
+        const seen = new Set(tfRuns.map(r => r.id));
+        const historical = this.history.list(repoSlug, 50).filter(r => !seen.has(r.id));
+        return [...tfRuns, ...historical].map(r => new RunTreeItem(r));
+      }
+      return tfRuns.map(r => new RunTreeItem(r));
     } catch {
+      // On API failure, fall back to local history if available.
+      if (this.history) {
+        return this.history.list(`${owner}/${repo}`, 50).map(r => new RunTreeItem(r));
+      }
       return [];
     }
   }

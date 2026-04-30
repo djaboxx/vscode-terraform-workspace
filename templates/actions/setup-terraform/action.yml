@@ -1,0 +1,48 @@
+name: "Setup Terraform / OpenTofu"
+description: "Installs Terraform or OpenTofu CLI based on the TF_CLI env var (defaults to tofu)."
+
+inputs:
+  cli:
+    description: "Which CLI to install: 'terraform' or 'tofu'. Defaults to TF_CLI env var, or 'tofu'."
+    required: false
+    default: ""
+  terraform-version:
+    description: "Terraform version (when cli=terraform)."
+    required: false
+    default: "latest"
+  tofu-version:
+    description: "OpenTofu version (when cli=tofu)."
+    required: false
+    default: "latest"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Determine CLI"
+      id: cli
+      shell: bash
+      run: |
+        CLI="${{ inputs.cli }}"
+        if [ -z "$CLI" ]; then
+          CLI="${TF_CLI:-tofu}"
+        fi
+        echo "cli=$CLI" >> "$GITHUB_OUTPUT"
+
+    - name: "Setup Terraform"
+      if: steps.cli.outputs.cli == 'terraform'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: "Setup OpenTofu"
+      if: steps.cli.outputs.cli == 'tofu'
+      uses: opentofu/setup-opentofu@v1
+      with:
+        tofu_version: ${{ inputs.tofu-version }}
+        tofu_wrapper: false
+
+    - name: "Verify install"
+      shell: bash
+      run: |
+        ${{ steps.cli.outputs.cli }} version

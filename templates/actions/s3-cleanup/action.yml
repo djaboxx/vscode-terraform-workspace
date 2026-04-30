@@ -1,0 +1,27 @@
+name: "Cache Cleanup"
+description: |
+  Deletes the per-run S3 cache prefix written by terraform-init / terraform-plan
+  (`<cache_bucket>/<cache_key>/`). Run with `if: always()` at the end of a job
+  so failed runs don't leak cached artifacts.
+
+inputs:
+  cache_bucket:
+    description: "S3 bucket holding the run cache."
+    required: true
+  cache_key:
+    description: "Prefix to delete under cache_bucket (the value emitted by terraform-init.cache_key)."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Remove cache prefix"
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${{ inputs.cache_key }}" ]; then
+          echo "cache_key is empty — nothing to delete."
+          exit 0
+        fi
+        echo "Deleting s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/"
+        aws s3 rm "s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/" --recursive

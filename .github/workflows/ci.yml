@@ -11,30 +11,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint-and-build:
-    name: Lint, Type-check & Build
+  devcontainer-ci:
+    name: Lint, Type-check, Test & Build (devcontainer)
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Cache devcontainer build
+        uses: actions/cache@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          path: .devcontainer-cache
+          key: ${{ runner.os }}-devcontainer-${{ hashFiles('.devcontainer/**', 'package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-devcontainer-
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type-check
-        run: npm run compile
-
-      - name: Build (production)
-        run: npm run build
+      - name: Build & run inside dev container
+        uses: devcontainers/ci@v0.3
+        with:
+          configFile: .devcontainer/devcontainer.json
+          userDataFolder: .devcontainer-cache
+          # Install once, then run the canonical runbook verbs. Keep this list
+          # in sync with `npm run help`.
+          runCmd: |
+            set -euo pipefail
+            npm ci
+            npm run lint
+            npm run compile
+            npm test -- --reporter=verbose
+            npm run build
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

@@ -190,10 +190,10 @@ export interface CompositeActionRefs {
 }
 
 export const DEFAULT_COMPOSITE_ACTIONS: CompositeActionRefs = {
-  checkout: 'gh-actions-checkout@v4',
+  checkout: 'gh-actions-checkout@main',
   awsAuth: 'aws-auth@main',
   ghAuth: 'gh-auth@main',
-  setupTerraform: 'gh-actions-terraform@v1',
+  setupTerraform: 'setup-terraform@main',
   terraformInit: 'terraform-init@main',
   terraformPlan: 'terraform-plan@main',
   terraformApply: 'terraform-apply@main',
@@ -248,6 +248,10 @@ export interface WorkspaceConfigEnv {
   preventSelfReview?: boolean;
   waitTimer?: number;
   canAdminsBypass?: boolean;
+  /** Per-environment Terraform/OpenTofu version pin. Falls back to workspace `terraformVersion`, then `vars.terraform_version`. */
+  terraformVersion?: string;
+  /** Path (relative to repo root) of the per-env tfvars file. Defaults to `varfiles/<env>.tfvars`. */
+  varfile?: string;
   reviewers?: WorkspaceConfigEnvReviewers;
   deploymentBranchPolicy?: WorkspaceConfigEnvDeploymentPolicy;
   stateConfig?: WorkspaceConfigEnvStateConfig;
@@ -303,11 +307,21 @@ export interface WorkspaceConfigCompositeActions {
  * Root shape of `.vscode/terraform-workspace.json`.
  * Maps 1:1 to the terraform-github-workspace module variables.
  */
+export interface WorkspaceConfigProxy {
+  http?: string;
+  https?: string;
+  no?: string;
+}
+
 export interface WorkspaceConfig {
   /** Schema version — allows future migration */
   version: 1;
-  /** GitHub org that owns composite action repos (e.g. "HappyPathway") */
+  /** GitHub org that owns composite action repos */
   compositeActionOrg: string;
+  /** Default Terraform/OpenTofu version, used when an env doesn't override and no `terraform_version` GHA var is set. */
+  terraformVersion?: string;
+  /** HTTP(S) proxy passthrough — emitted as `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` env vars in workflow steps. */
+  proxy?: WorkspaceConfigProxy;
   repo: WorkspaceConfigRepo;
   environments: WorkspaceConfigEnv[];
   stateConfig?: WorkspaceConfigStateConfig;

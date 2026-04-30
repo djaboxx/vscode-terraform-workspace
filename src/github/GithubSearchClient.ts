@@ -69,17 +69,26 @@ export class GithubSearchClient {
       return { totalCount: 0, incompleteResults: true, items: [] };
     }
 
-    const q = [query, `org:${org}`, ...qualifiers].join(' ');
+    const parts = [query, ...(org ? [`org:${org}`] : []), ...qualifiers];
+    const q = parts.join(' ');
     const url = `${this.auth.apiBaseUrl}/search/code?q=${encodeURIComponent(q)}&per_page=${perPage}`;
 
     // text-match media type returns fragment snippets; overrides the base Accept header
     const headers = { ...this.auth.ghHeaders(token), Accept: 'application/vnd.github.text-match+json' };
 
-    const response = await fetch(url, { headers });
+    const response = await this.auth.fetch(url, { headers });
 
     if (response.status === 403) {
-      // Rate limited or no search access
-      return { totalCount: 0, incompleteResults: true, items: [] };
+      const body = await response.text();
+      throw new Error(
+        `GitHub Search API returned 403 — check that your token has the \`repo\` scope ` +
+        `and that you have access to the \`${org}\` organization. Details: ${body}`,
+      );
+    }
+
+    if (response.status === 422) {
+      const body = await response.text();
+      throw new Error(`GitHub Search API rejected the query (422 Unprocessable Entity). Details: ${body}`);
     }
 
     if (!response.ok) {
