@@ -82,8 +82,9 @@ export class CallNotesPanel {
     let target = vscode.Uri.joinPath(callnotesDir, baseName);
     // avoid overwrite by adding numeric suffix
     let suffix = 0;
-    while (true) {
-      try { await vscode.workspace.fs.stat(target); if (suffix === 0) { suffix = 1; target = vscode.Uri.joinPath(callnotesDir, `callnotes-${y}-${m}-${d}-${suffix}.md`); continue; } else { suffix++; target = vscode.Uri.joinPath(callnotesDir, `callnotes-${y}-${m}-${d}-${suffix}.md`); continue; } } catch { break; }
+    let fileExists = true;
+    while (fileExists) {
+      try { await vscode.workspace.fs.stat(target); if (suffix === 0) { suffix = 1; } else { suffix++; } target = vscode.Uri.joinPath(callnotesDir, `callnotes-${y}-${m}-${d}-${suffix}.md`); } catch { fileExists = false; }
     }
 
     const md = this.renderMarkdown(raw, date);

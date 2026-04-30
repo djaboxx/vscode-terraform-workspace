@@ -4,7 +4,7 @@ export interface ActionItem {
   due?: string; // ISO date string when detected
 }
 
-const ASSIGNEE_RE = /@([a-zA-Z0-9_\-]+)/;
+const ASSIGNEE_RE = /@([a-zA-Z0-9_-]+)/;
 const ISO_DATE_RE = /\b(\d{4}-\d{2}-\d{2})\b/;
 
 export function parseActionItems(raw: string): ActionItem[] {

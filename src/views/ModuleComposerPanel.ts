@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { GithubModuleClient, TerraformModule, ModuleVariable } from '../github/GithubModuleClient.js';
-import { writeModuleRepoFiles } from '../workflows/ModuleRepoScaffolder.js';
 
 // ─── Message types ────────────────────────────────────────────────────────────
 
@@ -812,7 +811,7 @@ export class ModuleComposerPanel {
     }
     if (t.startsWith('object(') || t.startsWith('tuple(') || t === 'any') {
       // Return raw if it looks like an HCL expression; otherwise quote it
-      if (/^[\[{]|^(true|false|null|\d)/.test(raw.trim())) return raw;
+      if (/^[[{]|^(true|false|null|[0-9])/.test(raw.trim())) return raw;
       return '"' + raw.replace(/\\\\/g, '\\\\').replace(/"/g, '\\\\"') + '"';
     }
     // string — always quote
@@ -873,7 +872,7 @@ function hclLiteral(raw: string, type = 'string'): string {
 
   if (t.startsWith('object(') || t.startsWith('tuple(') || t === 'any') {
     // Pass through if it looks like an expression; otherwise quote it.
-    if (/^[\[{]|^(true|false|null|\d)/.test(raw.trim())) return raw;
+    if (/^[[{]|^(true|false|null|[0-9])/.test(raw.trim())) return raw;
     return JSON.stringify(raw);
   }
 
