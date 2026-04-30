@@ -26,8 +26,6 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        # --ignore-scripts avoids native-addon compile failures (e.g. better-sqlite3)
-        # on runners that lack the right build toolchain; esbuild still bundles fine.
         run: npm ci --ignore-scripts
 
       - name: Build (production)

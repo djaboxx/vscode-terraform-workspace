@@ -2003,7 +2003,6 @@
     "clean": "node -e \"const fs=require('fs');for(const p of ['dist','coverage','.vitest-cache']){try{fs.rmSync(p,{recursive:true,force:true})}catch{}};for(const f of fs.readdirSync('.')){if(f.endsWith('.vsix'))fs.rmSync(f)}\""
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.95.0",
@@ -2021,7 +2020,6 @@
     "@types/libsodium-wrappers": "^0.7.14",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "better-sqlite3": "^12.9.0",
     "libsodium-wrappers": "^0.8.4"
   }
 }
