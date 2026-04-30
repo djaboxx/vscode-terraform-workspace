@@ -14,6 +14,7 @@ import { TerraformResourceCodeLens } from './views/TerraformResourceCodeLens.js'
 import { runBackendBootstrap, runOidcTrustPolicy, runScaffoldFromTemplate } from './workflows/Scaffolders.js';
 import { WorkspacesTreeProvider, WorkspaceTreeItem } from './views/WorkspacesTreeProvider.js';
 import { VariablesTreeProvider, VariableTreeItem } from './views/VariablesTreeProvider.js';
+import { RequiredSetupTreeProvider, RequiredSettingItem, REQUIRED_SETTINGS } from './views/RequiredSetupTreeProvider.js';
 import { RunsTreeProvider, RunTreeItem } from './views/RunsTreeProvider.js';
 import { WorkspaceConfigPanel } from './views/WorkspaceConfigPanel.js';
 import { ModuleComposerPanel } from './views/ModuleComposerPanel.js';
@@ -36,9 +37,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const searchClient = new GithubSearchClient(auth);
   const moduleClient = new GithubModuleClient(auth);
   const configManager = new WorkspaceConfigManager(context);
-  const tfCache = new TerraformFileCache(context.globalStorageUri.fsPath);
-  const runHistory = new RunHistoryStore(context.globalStorageUri.fsPath);
-  context.subscriptions.push({ dispose: () => runHistory.dispose() });
+  let tfCache: TerraformFileCache;
+  try {
+    tfCache = new TerraformFileCache(context.globalStorageUri.fsPath);
+  } catch (err) {
+    tfCache = TerraformFileCache.createNoop();
+    const msg = err instanceof Error ? err.message : String(err);
+    void vscode.window.showWarningMessage(
+      `Terraform Workspace: file cache unavailable (SQLite failed to load: ${msg}). All other features are unaffected.`
+    );
+  }
+
+  let runHistory: RunHistoryStore;
+  try {
+    runHistory = new RunHistoryStore(context.globalStorageUri.fsPath);
+    context.subscriptions.push({ dispose: () => runHistory.dispose() });
+  } catch (err) {
+    // Native SQLite module failed (ABI mismatch or missing binary).
+    // Fall back to a no-op store so the rest of the extension still activates.
+    runHistory = RunHistoryStore.createNoop();
+    const msg = err instanceof Error ? err.message : String(err);
+    void vscode.window.showWarningMessage(
+      `Terraform Workspace: run history unavailable (SQLite failed to load: ${msg}). All other features are unaffected.`
+    );
+  }
+
   const actionsScaffolder = new LocalActionsScaffolder(context.extensionUri);
 
   // Warm the cache before anything needs it; watcher keeps it current afterwards
@@ -155,11 +178,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const workspacesProvider = new WorkspacesTreeProvider(envsClient, configManager);
   const variablesProvider = new VariablesTreeProvider(envsClient, orgsClient, configManager);
+  const requiredSetupProvider = new RequiredSetupTreeProvider(envsClient, configManager);
   const runsProvider = new RunsTreeProvider(actionsClient, configManager, runHistory);
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('terraform.workspaces', workspacesProvider),
     vscode.window.registerTreeDataProvider('terraform.variables', variablesProvider),
+    vscode.window.registerTreeDataProvider('terraform.requiredSetup', requiredSetupProvider),
     vscode.window.registerTreeDataProvider('terraform.runs', runsProvider),
   );
 
@@ -168,6 +193,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configManager.onDidChange(() => {
       workspacesProvider.refresh();
       variablesProvider.refresh();
+      requiredSetupProvider.refresh();
       runsProvider.refresh();
       refreshFolderStatusBar();
     }),
@@ -183,6 +209,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await refreshFolderStatusBar();
         workspacesProvider.refresh();
         variablesProvider.refresh();
+        requiredSetupProvider.refresh();
         runsProvider.refresh();
       }
     }),
@@ -190,6 +217,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('terraform.refreshWorkspaces', () => {
       workspacesProvider.refresh();
       variablesProvider.refresh();
+      requiredSetupProvider.refresh();
       runsProvider.refresh();
     }),
 
@@ -310,6 +338,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           await orgsClient.setOrgVariable(owner, key, value);
         }
         variablesProvider.refresh();
+        requiredSetupProvider.refresh();
         vscode.window.showInformationMessage(`Variable "${key}" set.`);
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to set variable: ${String(err)}`);
@@ -348,10 +377,129 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           await orgsClient.setOrgSecret(owner, key, value);
         }
         variablesProvider.refresh();
+        requiredSetupProvider.refresh();
         vscode.window.showInformationMessage(`Secret "${key}" set.`);
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to set secret: ${String(err)}`);
       }
+    }),
+
+    vscode.commands.registerCommand('terraform.requiredSetup.refresh', () => {
+      requiredSetupProvider.refresh();
+    }),
+
+    vscode.commands.registerCommand('terraform.requiredSetup.set', async (item?: RequiredSettingItem) => {
+      if (!item) return;
+      const active = await configManager.getActive();
+      if (!active) {
+        vscode.window.showWarningMessage('No workspace config found.');
+        return;
+      }
+      const { repoOrg: owner, name: repo } = active.config.repo;
+      const { def, envName, currentValue, isSet } = item;
+
+      const promptSuffix = envName ? ` (env: ${envName})` : ' (repository)';
+      const value = await vscode.window.showInputBox({
+        prompt: `${def.kind === 'secret' ? 'Secret' : 'Variable'} ${def.name}${promptSuffix} \u2014 ${def.purpose}`,
+        password: def.kind === 'secret',
+        value: def.kind === 'variable' && isSet ? currentValue ?? '' : '',
+        ignoreFocusOut: true,
+      });
+      if (value === undefined) return;
+
+      try {
+        if (def.scope === 'environment') {
+          if (!envName) {
+            vscode.window.showWarningMessage('Environment-scoped setting requires an environment.');
+            return;
+          }
+          if (def.kind === 'secret') {
+            await envsClient.setEnvironmentSecret(owner, repo, envName, def.name, value);
+          } else {
+            await envsClient.setEnvironmentVariable(owner, repo, envName, def.name, value);
+          }
+        } else {
+          if (def.kind === 'secret') {
+            await envsClient.setRepoSecret(owner, repo, def.name, value);
+          } else {
+            await envsClient.setRepoVariable(owner, repo, def.name, value);
+          }
+        }
+        requiredSetupProvider.refresh();
+        variablesProvider.refresh();
+        vscode.window.showInformationMessage(`${def.name} set${envName ? ` for ${envName}` : ''}.`);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to set ${def.name}: ${String(err)}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.requiredSetup.setAll', async () => {
+      const active = await configManager.getActive();
+      if (!active) {
+        vscode.window.showWarningMessage('No workspace config found.');
+        return;
+      }
+      const { repoOrg: owner, name: repo } = active.config.repo;
+
+      // Repository-scoped settings
+      for (const def of REQUIRED_SETTINGS.filter(d => d.scope === 'repository')) {
+        const value = await vscode.window.showInputBox({
+          prompt: `[Repository] ${def.kind === 'secret' ? 'Secret' : 'Variable'} ${def.name} \u2014 ${def.purpose}${def.optional ? ' (skip with Esc)' : ''}`,
+          password: def.kind === 'secret',
+          ignoreFocusOut: true,
+        });
+        if (value === undefined) {
+          if (!def.optional) {
+            const cont = await vscode.window.showWarningMessage(
+              `Skipped required setting ${def.name}. Continue with the rest?`,
+              'Continue', 'Cancel',
+            );
+            if (cont !== 'Continue') return;
+          }
+          continue;
+        }
+        try {
+          if (def.kind === 'secret') {
+            await envsClient.setRepoSecret(owner, repo, def.name, value);
+          } else {
+            await envsClient.setRepoVariable(owner, repo, def.name, value);
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(`Failed to set ${def.name}: ${String(err)}`);
+        }
+      }
+
+      // Environment-scoped settings — ask for each existing env
+      try {
+        const envs = active.config.useGhaEnvironments === false
+          ? []
+          : await envsClient.listEnvironments(owner, repo);
+        for (const env of envs) {
+          for (const def of REQUIRED_SETTINGS.filter(d => d.scope === 'environment')) {
+            const value = await vscode.window.showInputBox({
+              prompt: `[Env: ${env.name}] ${def.kind === 'secret' ? 'Secret' : 'Variable'} ${def.name} \u2014 ${def.purpose}`,
+              password: def.kind === 'secret',
+              ignoreFocusOut: true,
+            });
+            if (value === undefined) continue;
+            try {
+              if (def.kind === 'secret') {
+                await envsClient.setEnvironmentSecret(owner, repo, env.name, def.name, value);
+              } else {
+                await envsClient.setEnvironmentVariable(owner, repo, env.name, def.name, value);
+              }
+            } catch (err) {
+              vscode.window.showErrorMessage(`Failed to set ${def.name} on ${env.name}: ${String(err)}`);
+            }
+          }
+        }
+      } catch {
+        // No envs available; ignore
+      }
+
+      requiredSetupProvider.refresh();
+      variablesProvider.refresh();
+      vscode.window.showInformationMessage('Required setup complete.');
     }),
 
     vscode.commands.registerCommand('terraform.deleteVariable', async (item: VariableTreeItem) => {
@@ -385,6 +533,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
         }
         variablesProvider.refresh();
+        requiredSetupProvider.refresh();
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to delete: ${String(err)}`);
       }

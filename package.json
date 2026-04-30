@@ -46,12 +46,6 @@
         "url": "./schemas/terraform-workspace.schema.json"
       }
     ],
-    "commands": [
-      {
-        "command": "terraform.callNotes.open",
-        "title": "Terraform: Open Call Notes"
-      }
-    ],
     "chatParticipants": [
       {
         "id": "terraform.assistant",
@@ -762,14 +756,6 @@
         "mac": "cmd+alt+n"
       }
     ],
-    "menus": {
-      "editor/context": [
-        {
-          "command": "terraform.callNotes.open",
-          "when": "editorTextFocus"
-        }
-      ]
-    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -790,6 +776,11 @@
           "id": "terraform.variables",
           "name": "Variables & Secrets",
           "contextualTitle": "Terraform Variables"
+        },
+        {
+          "id": "terraform.requiredSetup",
+          "name": "Required Setup",
+          "contextualTitle": "Terraform Required Setup"
         },
         {
           "id": "terraform.runs",
@@ -851,6 +842,23 @@
         "command": "terraform.deleteVariable",
         "title": "Delete Variable",
         "icon": "$(trash)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.requiredSetup.setAll",
+        "title": "Set All Required Variables & Secrets\u2026",
+        "icon": "$(checklist)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.requiredSetup.refresh",
+        "title": "Refresh Required Setup",
+        "icon": "$(refresh)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.requiredSetup.set",
+        "title": "Set Required Value\u2026",
         "category": "Terraform"
       },
       {
@@ -978,9 +986,21 @@
         "title": "Review Deployment",
         "icon": "$(thumbsup)",
         "category": "Terraform"
+      },
+      {
+        "command": "terraform.callNotes.open",
+        "title": "Open Call Notes",
+        "icon": "$(notebook)",
+        "category": "Terraform"
       }
     ],
     "menus": {
+      "editor/context": [
+        {
+          "command": "terraform.callNotes.open",
+          "when": "editorTextFocus"
+        }
+      ],
       "view/title": [
         {
           "command": "terraform.refreshWorkspaces",
@@ -1010,6 +1030,16 @@
         {
           "command": "terraform.addSecret",
           "when": "view == terraform.variables",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.requiredSetup.setAll",
+          "when": "view == terraform.requiredSetup",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.requiredSetup.refresh",
+          "when": "view == terraform.requiredSetup",
           "group": "navigation"
         }
       ],

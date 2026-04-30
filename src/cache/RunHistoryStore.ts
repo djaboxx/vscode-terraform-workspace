@@ -1,8 +1,13 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import Database from 'better-sqlite3';
 import { TfRun, RunType, RunStatus, RunConclusion } from '../types/index.js';
 import { asRecord, asString, asNumber, asOptionalString } from '../util/narrow.js';
+
+// Loaded lazily inside the constructor so a native ABI mismatch throws at
+// instantiation time (catchable) rather than at bundle-load time (fatal).
+type BetterSqlite3 = typeof import('better-sqlite3');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const loadSqlite = (): BetterSqlite3 => require('better-sqlite3') as BetterSqlite3;
 
 /**
  * Persistent local cache of observed Terraform workflow runs. Survives
@@ -13,12 +18,13 @@ import { asRecord, asString, asNumber, asOptionalString } from '../util/narrow.j
  * Stored at `{globalStoragePath}/run_history.db`.
  */
 export class RunHistoryStore {
-  private readonly db: Database.Database;
-  private readonly stmtUpsert: Database.Statement;
-  private readonly stmtList: Database.Statement;
-  private readonly stmtListAll: Database.Statement;
+  private readonly db: import('better-sqlite3').Database;
+  private readonly stmtUpsert: import('better-sqlite3').Statement;
+  private readonly stmtList: import('better-sqlite3').Statement;
+  private readonly stmtListAll: import('better-sqlite3').Statement;
 
   constructor(storagePath: string) {
+    const Database = loadSqlite();
     fs.mkdirSync(storagePath, { recursive: true });
     this.db = new Database(path.join(storagePath, 'run_history.db'));
     this.db.pragma('journal_mode = WAL');
@@ -51,7 +57,7 @@ export class RunHistoryStore {
    * cache can never wedge activation.
    */
   private runMigrations(): void {
-    const MIGRATIONS: Array<(db: Database.Database) => void> = [
+    const MIGRATIONS: Array<(db: import('better-sqlite3').Database) => void> = [
       (db) => {
         db.exec(`
           CREATE TABLE IF NOT EXISTS runs (
@@ -145,6 +151,21 @@ export class RunHistoryStore {
 
   dispose(): void {
     this.db.close();
+  }
+
+  /** Returns a no-op store used as a fallback when SQLite fails to load. */
+  static createNoop(): RunHistoryStore {
+    return Object.create(RunHistoryStore.prototype, {
+      db: { value: null },
+      stmtUpsert: { value: null },
+      stmtList: { value: null },
+      stmtListAll: { value: null },
+      upsert: { value: () => undefined },
+      upsertMany: { value: () => undefined },
+      list: { value: () => [] },
+      listAll: { value: () => [] },
+      dispose: { value: () => undefined },
+    }) as RunHistoryStore;
   }
 }
 

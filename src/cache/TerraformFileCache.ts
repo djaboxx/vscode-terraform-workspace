@@ -1,8 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import Database from 'better-sqlite3';
 import { sanitizeFtsQuery } from './sanitizeFtsQuery.js';
+
+// Loaded lazily inside the constructor so a native ABI/arch mismatch throws
+// at instantiation time (catchable) rather than at bundle-load time (fatal).
+type BetterSqlite3 = typeof import('better-sqlite3');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const loadSqlite = (): BetterSqlite3 => require('better-sqlite3') as BetterSqlite3;
 
 export { sanitizeFtsQuery };
 
@@ -64,19 +69,20 @@ export interface TfSearchRow {
  * - `search(query)` runs an FTS5 full-text query against all cached HCL content.
  */
 export class TerraformFileCache implements vscode.Disposable {
-  private readonly db: Database.Database;
+  private readonly db: import('better-sqlite3').Database;
   private readonly watcher: vscode.FileSystemWatcher;
   private dirty = true;
   private cachedContext: string | null = null;
 
   // Prepared statements — created once, reused on every call
-  private readonly stmtUpsert: Database.Statement;
-  private readonly stmtDelete: Database.Statement;
-  private readonly stmtAll: Database.Statement;
-  private readonly stmtSearch: Database.Statement;
-  private readonly stmtCount: Database.Statement;
+  private readonly stmtUpsert: import('better-sqlite3').Statement;
+  private readonly stmtDelete: import('better-sqlite3').Statement;
+  private readonly stmtAll: import('better-sqlite3').Statement;
+  private readonly stmtSearch: import('better-sqlite3').Statement;
+  private readonly stmtCount: import('better-sqlite3').Statement;
 
   constructor(storagePath: string) {
+    const Database = loadSqlite();
     // Ensure the storage directory exists
     fs.mkdirSync(storagePath, { recursive: true });
 
@@ -214,8 +220,33 @@ export class TerraformFileCache implements vscode.Disposable {
   }
 
   dispose(): void {
-    this.watcher.dispose();
-    this.db.close();
+    this.watcher?.dispose();
+    this.db?.close();
+  }
+
+  /**
+   * Returns a no-op instance used when the native SQLite module fails to load.
+   * All read methods return empty results; mutations are silently dropped.
+   */
+  static createNoop(): TerraformFileCache {
+    const noop = (): void => undefined;
+    return Object.create(TerraformFileCache.prototype, {
+      db: { value: null },
+      watcher: { value: { dispose: noop } },
+      dirty: { value: false, writable: true },
+      cachedContext: { value: null, writable: true },
+      stmtUpsert: { value: { run: noop } },
+      stmtDelete: { value: { run: () => ({ changes: 0 }) } },
+      stmtAll: { value: { all: () => [] } },
+      stmtSearch: { value: { all: () => [] } },
+      stmtCount: { value: { get: () => ({ n: 0 }) } },
+      initialize: { value: async () => undefined },
+      getContext: { value: () => null },
+      search: { value: () => [] },
+      getFile: { value: () => undefined },
+      size: { get: () => 0 },
+      dispose: { value: noop },
+    }) as TerraformFileCache;
   }
 
   // ── private ────────────────────────────────────────────────────────────────

@@ -187,6 +187,8 @@ Sensitive operations (apply, set secret) display a confirmation dialog before ex
 
 The composite actions scaffolded into `.github/actions/` (when `terraformWorkspace.useLocalActions` is enabled, the default) expect the following to be set on the repo or environment in GitHub:
 
+> Manage these directly from the **Required Setup** view in the Terraform activity bar — each row shows whether the value is set at the right scope, click to set or update (secrets are entered via a password input and encrypted client-side before transmission). Use the checklist icon in the view title to walk through every required value in one pass via `Terraform: Set All Required Variables & Secrets…`.
+
 | Name | Type | Used by | Purpose |
 |------|------|---------|---------|
 | `AWS_ROLE_TO_ASSUME` | variable or secret | `aws-auth` | IAM role ARN assumed via OIDC. The role's trust policy must allow `token.actions.githubusercontent.com` for this repo + environment. |
