@@ -7,6 +7,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.3.0] - 2026-04-30
 
 ### Added
+- **Call Notes panel** — `Terraform: Open Call Notes` command (also reachable from a new status-bar button and the editor context menu) opens a WebView where meeting/call notes are captured, saved to `.callnotes/callnotes-<date>.md`, and parsed into a draft work plan. The parser extracts action items from `-`/`*` list items and `TODO`/`ACTION` markers, detects `@username` as assignee, and recognises `YYYY-MM-DD` due dates. The draft plan opens as an untitled Markdown document.
+- **Flat-repo support** (`useGhaEnvironments: false`) — repos that do not use GitHub Actions Environments can now be configured without the semantic mismatch of having an `environments` key. Use the new `workspaces` key (same shape as `environments`) to declare named Terraform workspace run-configurations. When false: the generated workflow YAML omits the `environment:` job key (no GHA Environment gate), and the Variables & Secrets view skips environment-scoped API calls.
+- **`workspaces` config key** — alias for `environments` intended for flat repos. `WorkspaceConfigManager.read()` normalises `workspaces` → `environments` on load so all downstream consumers (WorkflowGenerator, VariablesTreeProvider, DriftDetector, chat participant, tools) require no changes. `getWorkspaces(config)` exported from `types/index.ts` for code paths that construct `WorkspaceConfig` objects directly.
+- **JSON schema updated** — `schemas/terraform-workspace.schema.json` now requires `version` + `repo` only, enforces exactly one of `environments` or `workspaces` via `oneOf`, and documents both keys with descriptions.
 - **Module-repo scaffolder** — new `terraform_scaffold_module_repo` language
   model tool that materialises USAGE.md Pattern 1 in one shot: writes
   `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf` (with provider-aware

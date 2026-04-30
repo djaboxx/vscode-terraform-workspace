@@ -46,6 +46,12 @@
         "url": "./schemas/terraform-workspace.schema.json"
       }
     ],
+    "commands": [
+      {
+        "command": "terraform.callNotes.open",
+        "title": "Terraform: Open Call Notes"
+      }
+    ],
     "chatParticipants": [
       {
         "id": "terraform.assistant",
@@ -749,6 +755,21 @@
         }
       }
     ],
+    "keybindings": [
+      {
+        "command": "terraform.callNotes.open",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "terraform.callNotes.open",
+          "when": "editorTextFocus"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -1105,6 +1126,17 @@
           "default": 20,
           "minimum": 1,
           "description": "Maximum recent commits inspected per repo per tick."
+        },
+        "terraformWorkspace.auth.enableOidc": {
+          "type": "boolean",
+          "default": true,
+          "description": "Assume the org supports GitHub Actions OIDC (`id-token: write`). If false the extension will offer PAT/GitHub App guidance when scaffolding trust policies."
+        },
+        "terraformWorkspace.auth.preferredAuthMethod": {
+          "type": "string",
+          "enum": ["oidc", "github-app", "personal-access-token"],
+          "default": "oidc",
+          "description": "Preferred authentication method when OIDC is unavailable. Only used for guidance; the extension does not auto-configure provider-specific infra."
         },
         "terraformWorkspace.compositeActionOrg": {
           "type": "string",

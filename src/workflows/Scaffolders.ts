@@ -139,6 +139,25 @@ export async function runBackendBootstrap(): Promise<void> {
 }
 
 export async function runOidcTrustPolicy(auth?: { resolveHostname(): Promise<string> }): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration('terraformWorkspace');
+  const enableOidc = cfg.get<boolean>('auth.enableOidc', true);
+  if (!enableOidc) {
+    const choice = await vscode.window.showInformationMessage(
+      'OIDC appears disabled for this workspace. The extension can show guidance for GitHub App or Personal Access Token (PAT) fallbacks.',
+      'Open Guidance',
+      'Continue Anyway',
+    );
+    if (choice === 'Open Guidance') {
+      try {
+        const doc = await vscode.workspace.openTextDocument('README.md');
+        await vscode.window.showTextDocument(doc);
+      } catch {
+        vscode.window.showInformationMessage('Open the README for more details about non-OIDC fallbacks.');
+      }
+      return;
+    }
+  }
+
   const awsAccountId = await vscode.window.showInputBox({ prompt: 'AWS account ID', validateInput: v => /^\d{12}$/.test(v) ? null : 'Account ID must be 12 digits' });
   if (!awsAccountId) return;
   const githubOrg = await vscode.window.showInputBox({ prompt: 'GitHub org/owner' });

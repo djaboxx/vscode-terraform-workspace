@@ -15,15 +15,20 @@ That's intentional — narrow scope is the feature.
 ## The model in one paragraph
 
 You author Terraform modules and Terraform-consuming repositories on GitHub.
-Each repository represents one or more **environments** (dev / staging / prod),
-each modeled as a **GitHub Environment** with its own variables, secrets, and
-deployment protection rules. Plans and applies are **GitHub Actions workflows**
-triggered via `workflow_dispatch`, gated by environment protection rules, and
-auth'd to AWS via **OIDC** (no long-lived keys). New repositories start from
-**template repositories** — the scaffolding is a `repo/generate` API call,
-not a `cookiecutter` clone. AI is a **first-class operator**, not just a
-chat sidebar: it can search your org's HCL, trigger plans, set variables,
-diagnose drift, and lint workflows through registered language-model tools.
+Each repository represents one or more **workspaces** (dev / staging / prod).
+For repos that use GitHub Actions Environments, each workspace maps 1:1 to a
+**GitHub Environment** with its own variables, secrets, and deployment
+protection rules (`useGhaEnvironments: true`, the default). For **flat repos**
+that store state in S3 but do not use GitHub Actions Environments, set
+`useGhaEnvironments: false` and declare workspaces under the `workspaces` key
+instead of `environments` — the extension treats both identically at runtime.
+Plans and applies are **GitHub Actions workflows** triggered via
+`workflow_dispatch`, auth’d to AWS via **OIDC** (no long-lived keys). New
+repositories start from **template repositories** — the scaffolding is a
+`repo/generate` API call, not a `cookiecutter` clone. AI is a **first-class
+operator**, not just a chat sidebar: it can search your org’s HCL, trigger
+plans, set variables, diagnose drift, and lint workflows through registered
+language-model tools.
 
 ---
 
@@ -237,6 +242,56 @@ a Terraform-Cloud-only feature.
    workflows regenerate (toggle off via `autoSyncWorkflows` if you prefer
    manual control).
 
+### Pattern 7 — Flat repos without GitHub Actions Environments
+
+Some repos store Terraform state in S3 but do not use GitHub Actions
+Environments — either because the org doesn’t have them, or because the team
+prefers a simpler setup without deployment gates.
+
+Set `useGhaEnvironments: false` in `.vscode/terraform-workspace.json` and
+declare workspaces under the `workspaces` key:
+
+```json
+{
+  "version": 1,
+  "useGhaEnvironments": false,
+  "compositeActionOrg": "my-org",
+  "repo": { "name": "my-repo", "repoOrg": "my-org" },
+  "workspaces": [
+    { "name": "dev",  "branch": "main" },
+    { "name": "prod", "branch": "main" }
+  ],
+  "stateConfig": {
+    "bucket": "my-tfstate-bucket",
+    "region": "us-east-1",
+    "keyPrefix": "terraform-state-files",
+    "dynamodbTable": "tf_remote_state"
+  }
+}
+```
+
+What changes with `useGhaEnvironments: false`:
+
+- Generated workflow YAML **omits** the `environment: <name>` job key — no GitHub Environment gate, no required reviewers, no wait timer.
+- The Variables & Secrets tree view **skips** the `listEnvironmentSecrets` / `listEnvironmentVariables` API calls and shows only Repository and Org groups.
+- `DriftDetector` polls the plan workflow for each workspace normally; only the GHA Environment gate is absent.
+- All other tools (`terraform_run_plan`, `terraform_run_apply`, `terraform_check_drift`, `terraform_sync_workflows`, etc.) work identically.
+
+You can still gate deploys externally — e.g. branch protection on `main`, a PR approval requirement, or a manual approval step in the workflow.
+
+---
+
+## Capturing call notes and work plans
+
+Run **Terraform: Open Call Notes** from the Command Palette, the status bar,
+or the editor context menu. Paste or type meeting/call notes in the panel,
+then click **Save & Build Plan**.
+
+- Notes are saved to `.callnotes/callnotes-<date>.md` in the workspace root.
+- The parser scans for action items: lines starting with `-` or `*`, and lines containing `TODO` or `ACTION` markers.
+- `@username` is extracted as an assignee; `YYYY-MM-DD` is extracted as a due date.
+- A formatted draft work plan (Markdown checklist with metadata) opens as an untitled document for review and commit.
+
 ---
 
 ## What this extension will not do (deliberately)
@@ -271,7 +326,9 @@ a Terraform-Cloud-only feature.
 | Drift detection                   | `terraform_check_drift`                  | ✅     |
 | Auto-discovery from repo          | `terraform_discover_workspace`           | ✅     |
 | Auth scope diagnostics            | `Terraform: Diagnose GitHub Auth Scopes` | ✅     |
-| Self-hosted runner support        | `runnerGroup` per environment            | ✅     |
+| Self-hosted runner support        | `runnerGroup` per workspace              | ✅     |
+| Flat repos (no GHA Environments)  | `useGhaEnvironments: false`              | ✅     |
+| Call notes & work plan generation | `Terraform: Open Call Notes`             | ✅     |
 | TFE / Terraform Cloud workspaces  | —                                        | ❌ out of scope |
 | Local `terraform plan`            | —                                        | ❌ out of scope |
 | State surgery                     | —                                        | ❌ out of scope |

@@ -17,6 +17,7 @@ import { VariablesTreeProvider, VariableTreeItem } from './views/VariablesTreePr
 import { RunsTreeProvider, RunTreeItem } from './views/RunsTreeProvider.js';
 import { WorkspaceConfigPanel } from './views/WorkspaceConfigPanel.js';
 import { ModuleComposerPanel } from './views/ModuleComposerPanel.js';
+import { CallNotesPanel } from './views/CallNotesPanel.js';
 import { TerraformChatParticipant } from './chat/TerraformChatParticipant.js';
 import { registerTerraformTools } from './tools/TerraformTools.js';
 import { WorkflowGenerator } from './workflows/WorkflowGenerator.js';
@@ -25,7 +26,7 @@ import { RunHistoryStore } from './cache/RunHistoryStore.js';
 import { GitRemoteParser } from './auth/GitRemoteParser.js';
 import { LocalActionsScaffolder } from './workflows/LocalActionsScaffolder.js';
 import { ExtensionServices } from './services.js';
-import { TfWorkspace } from './types/index.js';
+import { TfWorkspace, getWorkspaces } from './types/index.js';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const auth = new GithubAuthProvider();
@@ -142,6 +143,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const lastRunTimer = setInterval(refreshLastRunStatusBar, 60_000);
   context.subscriptions.push({ dispose: () => clearInterval(lastRunTimer) });
 
+  // ── Call Notes status bar ───────────────────────────────────────────────
+  const notesStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+  notesStatusBar.command = 'terraform.callNotes.open';
+  notesStatusBar.tooltip = 'Open Call Notes';
+  notesStatusBar.text = '$(notebook) Call Notes';
+  notesStatusBar.show();
+  context.subscriptions.push(notesStatusBar);
+
   // ── Tree views ─────────────────────────────────────────────────────────────
 
   const workspacesProvider = new WorkspacesTreeProvider(envsClient, configManager);
@@ -182,6 +191,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       workspacesProvider.refresh();
       variablesProvider.refresh();
       runsProvider.refresh();
+    }),
+
+    vscode.commands.registerCommand('terraform.callNotes.open', () => {
+      CallNotesPanel.open(context);
     }),
 
     vscode.commands.registerCommand('terraform.selectWorkspace', (item: WorkspaceTreeItem) => {
@@ -675,7 +688,7 @@ async function runAutoDiscovery(
   const existing = await configManager.read(folder);
   const summary = [
     result.repoSlug ? `Repo: ${result.repoSlug}` : 'Repo: <not detected>',
-    `Environments: ${suggested.environments.length}`,
+    `Environments: ${getWorkspaces(suggested).length}`,
     `Backend: ${suggested.stateConfig?.bucket ?? 'n/a'} (${suggested.stateConfig?.region ?? 'n/a'})`,
     result.warnings.length ? `Warnings: ${result.warnings.length}` : null,
   ]

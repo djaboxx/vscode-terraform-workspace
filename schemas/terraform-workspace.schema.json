@@ -2,9 +2,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://happypathway.com/schemas/terraform-workspace.schema.json",
   "title": "Terraform Workspace Config",
-  "description": "Configuration file for the VS Code Terraform Workspace extension. Binds a workspace folder to a GitHub repo and a set of GitHub Environments (= terraform workspaces).",
+  "description": "Configuration file for the VS Code Terraform Workspace extension. Binds a workspace folder to a GitHub repo. Use 'environments' for GHA-Environment-backed repos, or 'workspaces' for flat repos without GHA Environments.",
   "type": "object",
-  "required": ["version", "repo", "environments"],
+  "required": ["version", "repo"],
+  "oneOf": [
+    { "required": ["environments"] },
+    { "required": ["workspaces"] }
+  ],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -31,8 +35,20 @@
       }
     },
     "repo": { "$ref": "#/definitions/repo" },
+    "useGhaEnvironments": {
+      "type": "boolean",
+      "default": true,
+      "description": "Set to false for flat repos that do not use GitHub Actions Environments. When false the generated workflows omit the 'environment:' gating block and environment-scoped secrets/variables are not fetched. Use 'workspaces' instead of 'environments' in this case."
+    },
     "environments": {
       "type": "array",
+      "description": "List of GitHub Actions Environments (= Terraform workspaces). Use this for repos that have GHA Environments configured. Mutually exclusive with 'workspaces'.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/environment" }
+    },
+    "workspaces": {
+      "type": "array",
+      "description": "List of Terraform workspace run-configurations for flat repos that do not use GHA Environments. Each entry generates a plan/apply workflow pair. Mutually exclusive with 'environments'.",
       "minItems": 1,
       "items": { "$ref": "#/definitions/environment" }
     },

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ExtensionServices } from '../services.js';
-import { VariableScope } from '../types/index.js';
+import { VariableScope, getWorkspaces } from '../types/index.js';
 import { WorkflowGenerator } from '../workflows/WorkflowGenerator.js';
 import { GitRemoteParser } from '../auth/GitRemoteParser.js';
 import { backendBootstrapTf, defaultOidcProvider, oidcTrustPolicy } from '../workflows/Scaffolders.js';
@@ -150,7 +150,7 @@ class RunPlanTool implements vscode.LanguageModelTool<RunPlanInput> {
     const { owner, repo } = ctx;
     const active = await this.services.configManager.getActive();
     const workspace =
-      options.input.workspace ?? active?.config.environments[0]?.name;
+      options.input.workspace ?? getWorkspaces(active!.config)[0]?.name;
 
     if (!workspace) {
       return textResult('No workspace specified and no environments configured.');
@@ -300,7 +300,7 @@ class GetStateTool implements vscode.LanguageModelTool<GetStateInput> {
     }
 
     const active = await this.services.configManager.getActive();
-    const workspace = options.input.workspace ?? active?.config.environments[0]?.name;
+    const workspace = options.input.workspace ?? (active ? getWorkspaces(active.config)[0]?.name : undefined);
 
     if (!workspace) {
       return textResult('No workspace specified.');
@@ -396,7 +396,7 @@ class ListVariablesTool implements vscode.LanguageModelTool<ListVariablesInput> 
     const { owner, repo } = ctx;
     const scope = options.input.scope ?? 'environment';
     const active = await this.services.configManager.getActive();
-    const workspace = options.input.workspace ?? active?.config.environments[0]?.name;
+    const workspace = options.input.workspace ?? (active ? getWorkspaces(active.config)[0]?.name : undefined);
 
     try {
       let lines: string[] = [];
@@ -860,7 +860,7 @@ class GetRunStatusTool implements vscode.LanguageModelTool<GetRunStatusInput> {
     const limit = options.input.limit ?? 3;
     const workspaces = options.input.workspace
       ? [options.input.workspace]
-      : (active?.config.environments.map(e => e.name) ?? []);
+      : (active ? getWorkspaces(active.config).map(e => e.name) : []);
 
     if (workspaces.length === 0) {
       return textResult('No workspaces configured.');

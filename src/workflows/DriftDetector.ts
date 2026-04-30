@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ExtensionServices } from '../services.js';
+import { getWorkspaces } from '../types/index.js';
 
 /**
  * Periodically polls each environment's plan workflow and surfaces drift —
@@ -51,7 +52,7 @@ export class DriftDetector implements vscode.Disposable {
     const [owner, repo] = active.config.repo.name.split('/');
     if (!owner || !repo) return drifted;
 
-    for (const env of active.config.environments) {
+    for (const env of getWorkspaces(active.config)) {
       const filename = `terraform-plan-${env.name}.yml`;
       try {
         const runs = await this.services.actionsClient.getWorkflowRuns(owner, repo, filename, 1);

@@ -318,17 +318,46 @@ export interface WorkspaceConfig {
   version: 1;
   /** GitHub org that owns composite action repos */
   compositeActionOrg: string;
+  /**
+   * Set to false for repos that do not use GitHub Actions Environments ("flat" repos).
+   * When false: the generated workflows omit the `environment:` gating block and
+   * environment-scoped secrets/variables are not fetched from the GitHub API.
+   * Repo-level and org-level variables still apply. Defaults to true.
+   */
+  useGhaEnvironments?: boolean;
   /** Default Terraform/OpenTofu version, used when an env doesn't override and no `terraform_version` GHA var is set. */
   terraformVersion?: string;
   /** HTTP(S) proxy passthrough — emitted as `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` env vars in workflow steps. */
   proxy?: WorkspaceConfigProxy;
   repo: WorkspaceConfigRepo;
-  environments: WorkspaceConfigEnv[];
+  /**
+   * Used when `useGhaEnvironments` is true (default). Each entry maps 1:1 to a
+   * GitHub Actions Environment which gates plan/apply runs.
+   * Mutually exclusive with `workspaces` — use one or the other.
+   */
+  environments?: WorkspaceConfigEnv[];
+  /**
+   * Alias for `environments` intended for flat repos (`useGhaEnvironments: false`).
+   * Each entry is a named Terraform workspace run-configuration; no GHA Environment
+   * is created or referenced. Use this key instead of `environments` to make flat
+   * repo configs self-documenting.
+   * Mutually exclusive with `environments` — use one or the other.
+   */
+  workspaces?: WorkspaceConfigEnv[];
   stateConfig?: WorkspaceConfigStateConfig;
   compositeActions?: WorkspaceConfigCompositeActions;
 }
 
 // ─── Pattern Library entry (HappyPathway module patterns) ────────────────────
+
+/**
+ * Returns the normalized list of workspace/environment run-configurations.
+ * Prefers `environments` (GHA-backed repos) over `workspaces` (flat repos).
+ * Always returns an array — never undefined.
+ */
+export function getWorkspaces(config: WorkspaceConfig): WorkspaceConfigEnv[] {
+  return config.environments ?? config.workspaces ?? [];
+}
 
 export interface HappyPathwayModule {
   /** Terraform registry source path */

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ExtensionServices } from '../services.js';
 import { CodeSearchResult } from '../github/GithubSearchClient.js';
 import { GitRemoteParser } from '../auth/GitRemoteParser.js';
+import { getWorkspaces } from '../types/index.js';
 
 export class TerraformChatParticipant {
   static register(
@@ -103,7 +104,7 @@ export class TerraformChatParticipant {
     }
 
     const { name: repo, repoOrg: owner } = active.config.repo;
-    const workspace = prompt.trim() || active.config.environments[0]?.name;
+    const workspace = prompt.trim() || getWorkspaces(active.config)[0]?.name;
 
     if (!workspace) {
       stream.markdown(
@@ -182,7 +183,7 @@ export class TerraformChatParticipant {
     }
 
     const { name: repo, repoOrg: owner } = active.config.repo;
-    const workspace = prompt.trim() || active.config.environments[0]?.name;
+    const workspace = prompt.trim() || getWorkspaces(active.config)[0]?.name;
 
     if (!workspace) {
       stream.markdown(
@@ -433,7 +434,7 @@ export class TerraformChatParticipant {
       if (active) {
         const { name: repo, repoOrg: owner } = active.config.repo;
         systemPrompt += `\n\nCurrent repository: ${owner}/${repo}`;
-        const envNames = active.config.environments.map(e => e.name).join(', ');
+        const envNames = getWorkspaces(active.config).map(e => e.name).join(', ');
         if (envNames) {
           systemPrompt += `\nConfigured environments: ${envNames}`;
         }

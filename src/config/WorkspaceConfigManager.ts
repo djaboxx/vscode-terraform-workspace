@@ -36,7 +36,14 @@ export class WorkspaceConfigManager {
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
       const text = Buffer.from(bytes).toString('utf-8');
-      return JSON.parse(text) as WorkspaceConfig;
+      const raw = JSON.parse(text) as WorkspaceConfig & { workspaces?: WorkspaceConfig['workspaces'] };
+      // Normalise: flat repos may use `workspaces` instead of `environments`.
+      // Coerce to `environments` so all downstream consumers stay unchanged.
+      if (raw.workspaces && !raw.environments) {
+        raw.environments = raw.workspaces;
+      }
+      raw.environments = raw.environments ?? [];
+      return raw;
     } catch {
       return undefined;
     }

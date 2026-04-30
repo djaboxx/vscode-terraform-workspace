@@ -12,20 +12,25 @@
 
 ## What Is This?
 
-**Terraform Workspace** bridges your VS Code editor with GitHub Actions as the sole execution engine for your Terraform infrastructure. No Terraform Cloud. No local `terraform apply`. Just **GitHub Environments as workspaces**, **GitHub Actions for plan/apply**, and **GitHub Secrets/Variables for configuration** — all managed without leaving your editor.
+**Terraform Workspace** bridges your VS Code editor with GitHub Actions as the sole execution engine for your Terraform infrastructure. No Terraform Cloud. No local `terraform apply`. Just **GitHub Actions for plan/apply**, **GitHub Secrets/Variables for configuration**, and **S3 for state** — all managed without leaving your editor.
 
-The extension is built around a core mental model:
+The extension supports two repo models:
+
+- **GHA-Environment repos** (`useGhaEnvironments: true`, the default) — each Terraform workspace maps 1:1 to a GitHub Environment, which gates plan/apply runs with deployment protection rules.
+- **Flat repos** (`useGhaEnvironments: false`) — each workspace is a named run-configuration without a backing GitHub Environment. S3 state is still isolated per workspace; no GHA Environment gate is created.
+
+The core concept mapping for GHA-Environment repos:
 
 | Concept | Backed by |
 |---|---|
-| Terraform workspace | GitHub Environment |
+| Terraform workspace | GitHub Environment (or named workspace for flat repos) |
 | Workspace variable | GitHub Actions Variable (`TF_VAR_*`) |
 | Workspace secret | GitHub Actions Encrypted Secret |
 | Plan / Apply run | GitHub Actions `workflow_dispatch` |
 | Terraform state | S3 backend (DynamoDB lock table) |
 | Composite actions | [HappyPathway](https://github.com/HappyPathway) reusable action repos |
 
-The AI layer — exposed as the `@terraform` chat participant and 22 language model tools — understands this model deeply and can generate code, trigger runs, manage variables, and bootstrap new repositories through natural language.
+The AI layer — exposed as the `@terraform` chat participant and 23 language model tools — understands this model deeply and can generate code, trigger runs, manage variables, and bootstrap new repositories through natural language.
 
 ---
 
@@ -88,6 +93,13 @@ Auth: VS Code built-in GitHub OAuth (repo + read:org + workflow scopes)
 
 ## Features
 
+### Call Notes
+
+- Open `Terraform: Open Call Notes` from the Command Palette or the status bar to capture meeting or call notes.
+- Notes are saved to `.callnotes/callnotes-<date>.md` in your workspace.
+- The extension extracts action items (supports `-`, `TODO`, or `ACTION` markers) and detects assignees using `@username` and due dates in `YYYY-MM-DD` format. A draft work plan is generated and opened as a Markdown document for review.
+
+
 ### `@terraform` Chat Participant
 
 Bring Terraform operations into GitHub Copilot Chat. The participant runs in **tool-call mode** with all 23 `terraform_*` language model tools available, so natural language requests dispatch real actions:
@@ -126,7 +138,7 @@ Sections:
 - **Repository** — name, org, PR enforcement, CODEOWNERS, admin teams, topics, repo-level vars/secrets
 - **Terraform State (S3)** — bucket, region, key prefix, DynamoDB table, per-environment backend flag
 - **Composite Action Refs** — pin specific versions of the HappyPathway reusable actions (checkout, aws-auth, terraform-init, terraform-plan, terraform-apply, s3-cleanup)
-- **Environments** — collapsible cards per environment with branch policies, reviewer teams, wait timers, per-env state overrides, env vars and secrets
+- **Environments / Workspaces** — collapsible cards per workspace with branch policies, reviewer teams, wait timers, per-workspace state overrides, env vars and secrets. The key is `environments` for GHA-Environment repos and `workspaces` for flat repos; the extension reads both interchangeably.
 
 Changes save directly to `.vscode/terraform-workspace.json`. The panel reloads automatically if the file changes externally (e.g. a `git pull`).
 
@@ -190,6 +202,13 @@ The composite actions scaffolded into `.github/actions/` (when `terraformWorkspa
 
 The repo must also have **OIDC** enabled (`id-token: write` on the workflow) and the IAM role's trust policy must accept tokens issued by `https://token.actions.githubusercontent.com` for the repo + environment.
 
+If your organization or GitHub installation does not support Actions OIDC (for example, some enterprise installations or strict org policies), the extension supports working with GitHub Enterprise Server (GHE) and provides fallback guidance for two common alternatives:
+
+- GitHub App: mint short-lived installation tokens and wire them into workflows (recommended for org-managed automation). The extension can scaffold guidance for App-based flows.
+- Personal Access Token (PAT): use a scoped PAT or organization-managed service account for workflows that cannot use OIDC. This is less secure than OIDC or an App but commonly used when OIDC is unavailable.
+
+For GHE, the OIDC issuer URL differs; the extension will default the provider host to `<your-ghe-host>/_services/token`. Use the `terraformWorkspace.auth.enableOidc` and `terraformWorkspace.auth.preferredAuthMethod` settings to control how the extension guides you when scaffolding trust policies.
+
 > Secret encryption inside the extension (e.g. when you write a value via the Variables view) is handled automatically by `libsodium-wrappers` — no local crypto deps to install.
 
 ---
@@ -215,7 +234,7 @@ The extension uses VS Code's **built-in GitHub OAuth provider** — no PAT requi
 Run **Terraform: Configure Workspace** (or click the **edit** icon in the Workspaces view). This opens the config panel and creates `.vscode/terraform-workspace.json` if one doesn't exist. Fill in:
 
 - Your GitHub org and repo name
-- At least one environment (e.g. `production`, `staging`)
+- At least one environment (use key `environments` for GHA-Environment repos, or `workspaces` if the repo does not use GitHub Actions Environments — set `useGhaEnvironments: false` in that case)
 - The S3 state bucket and region
 
 ### 4. Operate via `@terraform`

@@ -63,7 +63,7 @@ export class VariablesTreeProvider implements vscode.TreeDataProvider<VariablesN
     }
 
     if (!element) {
-      return this.getTopLevelGroups(owner, repo, active.config.repo.repoOrg);
+      return this.getTopLevelGroups(owner, repo, active.config.repo.repoOrg, active.config);
     }
 
     if (element instanceof VariableScopeGroup) {
@@ -77,16 +77,21 @@ export class VariablesTreeProvider implements vscode.TreeDataProvider<VariablesN
     owner: string,
     repo: string,
     org: string,
+    config?: import('../types/index.js').WorkspaceConfig,
   ): Promise<VariableScopeGroup[]> {
     const groups: VariableScopeGroup[] = [];
 
-    try {
-      const envs = await this.envsClient.listEnvironments(owner, repo);
-      for (const env of envs) {
-        groups.push(new VariableScopeGroup(`Env: ${env.name}`, `env:${env.name}`, env.name));
+    // Only query GHA Environments when the repo is configured to use them
+    const anyUseGhaEnv = !config || config.useGhaEnvironments !== false;
+    if (anyUseGhaEnv) {
+      try {
+        const envs = await this.envsClient.listEnvironments(owner, repo);
+        for (const env of envs) {
+          groups.push(new VariableScopeGroup(`Env: ${env.name}`, `env:${env.name}`, env.name));
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     groups.push(new VariableScopeGroup('Repository', `repo:${owner}/${repo}`));
