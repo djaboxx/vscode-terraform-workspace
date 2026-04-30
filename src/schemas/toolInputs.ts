@@ -647,3 +647,89 @@ export const TailLambdaLogsInputSchema = defineSchema<TailLambdaLogsInput>({
   },
   additionalProperties: false,
 });
+
+// ── GitHub Actions Runner (ghe-runner) tools ───────────────────────────────
+
+export interface RunnerGetStatusInput {
+  /**
+   * Optional name of a specific runner environment, e.g. "csvd-dev-ew".
+   * When omitted, status for all discovered environments is returned.
+   */
+  environment?: string;
+}
+
+export const RunnerGetStatusInputSchema = defineSchema<RunnerGetStatusInput>({
+  type: 'object',
+  properties: {
+    environment: { type: 'string', minLength: 1, nullable: true },
+  },
+  additionalProperties: false,
+});
+
+export interface RunnerRefreshTokenInput {
+  /** Name of the runner environment whose token Lambda should be invoked. */
+  environment?: string;
+}
+
+export const RunnerRefreshTokenInputSchema = defineSchema<RunnerRefreshTokenInput>({
+  type: 'object',
+  properties: {
+    environment: { type: 'string', minLength: 1, nullable: true },
+  },
+  additionalProperties: false,
+});
+
+export interface RunnerForceRedeployInput {
+  /** Name of the runner environment to redeploy. */
+  environment?: string;
+}
+
+export const RunnerForceRedeployInputSchema = defineSchema<RunnerForceRedeployInput>({
+  type: 'object',
+  properties: {
+    environment: { type: 'string', minLength: 1, nullable: true },
+  },
+  additionalProperties: false,
+});
+
+export interface RunnerScaleInput {
+  /** Name of the runner environment to scale. */
+  environment?: string;
+  /** New ECS desired task count. Use 0 to stop all runners. */
+  desiredCount: number;
+}
+
+export const RunnerScaleInputSchema = defineSchema<RunnerScaleInput>({
+  type: 'object',
+  required: ['desiredCount'],
+  properties: {
+    environment: { type: 'string', minLength: 1, nullable: true },
+    desiredCount: { type: 'integer', minimum: 0, maximum: 20 },
+  },
+  additionalProperties: false,
+});
+
+export interface RunnerGetLogsInput {
+  /** Name of the runner environment. */
+  environment?: string;
+  /**
+   * Explicit CloudWatch log group name. When omitted, the first group
+   * matching /ecs-ghe-runners* in the environment's region is used.
+   */
+  logGroup?: string;
+  /** CloudWatch filter pattern, e.g. "error" or "Job". */
+  filterPattern?: string;
+  /** Number of log lines to return (default 50, max 100). */
+  lines?: number;
+}
+
+export const RunnerGetLogsInputSchema = defineSchema<RunnerGetLogsInput>({
+  type: 'object',
+  properties: {
+    environment: { type: 'string', minLength: 1, nullable: true },
+    logGroup: { type: 'string', minLength: 1, nullable: true },
+    filterPattern: { type: 'string', nullable: true },
+    lines: { type: 'integer', minimum: 1, maximum: 100, nullable: true },
+  },
+  additionalProperties: false,
+});

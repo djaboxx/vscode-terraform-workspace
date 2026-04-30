@@ -22,6 +22,9 @@ import { CallNotesPanel } from './views/CallNotesPanel.js';
 import { TerraformChatParticipant } from './chat/TerraformChatParticipant.js';
 import { DaveChatParticipant } from './chat/DaveChatParticipant.js';
 import { registerTerraformTools } from './tools/TerraformTools.js';
+import { registerRunnerTools } from './tools/RunnerTools.js';
+import { GheRunnersClient } from './runners/GheRunnersClient.js';
+import { RunnersTreeProvider, RunnerEnvironmentItem } from './views/RunnersTreeProvider.js';
 import { WorkflowGenerator } from './workflows/WorkflowGenerator.js';
 import { TerraformFileCache } from './cache/TerraformFileCache.js';
 import { RunHistoryStore } from './cache/RunHistoryStore.js';
@@ -69,7 +72,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   tfCache.initialize();
   context.subscriptions.push(tfCache);
 
-  const services: ExtensionServices = { auth, actionsClient, envsClient, orgsClient, searchClient, moduleClient, configManager, tfCache, actionsScaffolder };
+  const runnersClient = new GheRunnersClient(auth);
+
+  const services: ExtensionServices = { auth, actionsClient, envsClient, orgsClient, searchClient, moduleClient, configManager, tfCache, actionsScaffolder, runnersClient };
 
   const outputChannel = vscode.window.createOutputChannel('Terraform Workspace');
   context.subscriptions.push(outputChannel);
@@ -209,11 +214,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const requiredSetupProvider = new RequiredSetupTreeProvider(envsClient, configManager);
   const runsProvider = new RunsTreeProvider(actionsClient, configManager, runHistory);
 
+  const runnersProvider = new RunnersTreeProvider(runnersClient);
+
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('terraform.workspaces', workspacesProvider),
     vscode.window.registerTreeDataProvider('terraform.variables', variablesProvider),
     vscode.window.registerTreeDataProvider('terraform.requiredSetup', requiredSetupProvider),
     vscode.window.registerTreeDataProvider('terraform.runs', runsProvider),
+    vscode.window.registerTreeDataProvider('terraform.runners', runnersProvider),
+    runnersProvider.startAutoRefresh(),
   );
 
   // Refresh views when config changes on disk
@@ -1313,6 +1322,209 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
+  // ── Runner management commands ─────────────────────────────────────────────
+
+  context.subscriptions.push(
+
+    vscode.commands.registerCommand('terraform.runners.refresh', () => {
+      runnersProvider.refresh();
+    }),
+
+    vscode.commands.registerCommand('terraform.runners.refreshEnvironment', (item?: RunnerEnvironmentItem) => {
+      if (item) {
+        runnersProvider.refreshEnvironment(item.environment.ecsCluster);
+      } else {
+        runnersProvider.refresh();
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.runners.forceTokenRefresh', async (item?: RunnerEnvironmentItem) => {
+      const envs = item ? [item.environment] : runnersProvider.getEnvironments();
+      if (envs.length === 0) {
+        vscode.window.showWarningMessage('No runner environments found.');
+        return;
+      }
+
+      let env = envs[0];
+      if (!item && envs.length > 1) {
+        const pick = await vscode.window.showQuickPick(
+          envs.map(e => ({ label: e.name, description: e.ecsCluster, env: e })),
+          { placeHolder: 'Select runner environment' },
+        );
+        if (!pick) return;
+        env = pick.env;
+      }
+
+      if (!env.lambdaFunctionName) {
+        vscode.window.showWarningMessage(
+          `Token refresh Lambda is not enabled for "${env.name}". ` +
+          `Set enable_lambda_token_refresh = true in default.auto.tfvars and re-apply.`,
+        );
+        return;
+      }
+
+      outputChannel.show(true);
+      outputChannel.appendLine(`▶ Invoking Lambda token refresh for ${env.name}…`);
+      try {
+        const payload = await runnersClient.forceTokenRefresh(env);
+        outputChannel.appendLine(`✓ Done. Payload: ${payload}`);
+        vscode.window.showInformationMessage(`✅ Token refresh complete for "${env.name}".`);
+        runnersProvider.refreshEnvironment(env.ecsCluster);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`✗ Error: ${msg}`);
+        vscode.window.showErrorMessage(`Token refresh failed: ${msg}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.runners.forceRedeploy', async (item?: RunnerEnvironmentItem) => {
+      const envs = item ? [item.environment] : runnersProvider.getEnvironments();
+      if (envs.length === 0) {
+        vscode.window.showWarningMessage('No runner environments found.');
+        return;
+      }
+
+      let env = envs[0];
+      if (!item && envs.length > 1) {
+        const pick = await vscode.window.showQuickPick(
+          envs.map(e => ({ label: e.name, description: e.ecsCluster, env: e })),
+          { placeHolder: 'Select runner environment' },
+        );
+        if (!pick) return;
+        env = pick.env;
+      }
+
+      const confirm = await vscode.window.showWarningMessage(
+        `Force-redeploy all runner tasks in "${env.name}"? ` +
+        `This will restart all ECS tasks and briefly interrupt running jobs.`,
+        { modal: true },
+        'Redeploy',
+      );
+      if (confirm !== 'Redeploy') return;
+
+      outputChannel.show(true);
+      outputChannel.appendLine(`▶ Force-redeploying ${env.name} (${env.ecsCluster} / ${env.ecsService})…`);
+      try {
+        await runnersClient.forceRedeploy(env);
+        outputChannel.appendLine('✓ Force-new-deployment triggered.');
+        vscode.window.showInformationMessage(`✅ Redeployment triggered for "${env.name}".`);
+        runnersProvider.refreshEnvironment(env.ecsCluster);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`✗ Error: ${msg}`);
+        vscode.window.showErrorMessage(`Force redeploy failed: ${msg}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.runners.scale', async (item?: RunnerEnvironmentItem) => {
+      const envs = item ? [item.environment] : runnersProvider.getEnvironments();
+      if (envs.length === 0) {
+        vscode.window.showWarningMessage('No runner environments found.');
+        return;
+      }
+
+      let env = envs[0];
+      if (!item && envs.length > 1) {
+        const pick = await vscode.window.showQuickPick(
+          envs.map(e => ({ label: e.name, description: e.ecsCluster, env: e })),
+          { placeHolder: 'Select runner environment' },
+        );
+        if (!pick) return;
+        env = pick.env;
+      }
+
+      const countStr = await vscode.window.showInputBox({
+        title: `Scale runners for "${env.name}"`,
+        prompt: `Enter desired runner count (current: ${env.desiredCount})`,
+        value: String(env.desiredCount),
+        validateInput: (v) => {
+          const n = Number(v);
+          if (!Number.isInteger(n) || n < 0 || n > 20) return 'Enter a number between 0 and 20';
+          return null;
+        },
+      });
+      if (countStr === undefined) return;
+
+      const newCount = Number(countStr);
+      outputChannel.show(true);
+      outputChannel.appendLine(`▶ Scaling "${env.name}" to ${newCount} runner(s)…`);
+      try {
+        await runnersClient.scaleRunners(env, newCount);
+        outputChannel.appendLine(`✓ Desired count set to ${newCount}.`);
+        vscode.window.showInformationMessage(
+          newCount === 0
+            ? `⚠️ Runners for "${env.name}" scaled to zero. Workflows are paused.`
+            : `✅ Runners for "${env.name}" scaled to ${newCount}.`,
+        );
+        runnersProvider.refreshEnvironment(env.ecsCluster);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.appendLine(`✗ Error: ${msg}`);
+        vscode.window.showErrorMessage(`Scale failed: ${msg}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.runners.viewLogs', async (item?: RunnerEnvironmentItem) => {
+      const envs = item ? [item.environment] : runnersProvider.getEnvironments();
+      if (envs.length === 0) {
+        vscode.window.showWarningMessage('No runner environments found.');
+        return;
+      }
+
+      let env = envs[0];
+      if (!item && envs.length > 1) {
+        const pick = await vscode.window.showQuickPick(
+          envs.map(e => ({ label: e.name, description: e.ecsCluster, env: e })),
+          { placeHolder: 'Select runner environment' },
+        );
+        if (!pick) return;
+        env = pick.env;
+      }
+
+      const groups = await runnersClient.listLogGroups(env);
+      if (groups.length === 0) {
+        vscode.window.showWarningMessage(`No log groups found in ${env.awsRegion} matching /ecs-ghe-runners*.`);
+        return;
+      }
+
+      let logGroup = groups[0];
+      if (groups.length > 1) {
+        const pick = await vscode.window.showQuickPick(groups, { placeHolder: 'Select log group' });
+        if (!pick) return;
+        logGroup = pick;
+      }
+
+      const filterPick = await vscode.window.showQuickPick(
+        [
+          { label: 'All logs', pattern: undefined },
+          { label: 'Errors only', pattern: 'error' },
+          { label: 'Job events', pattern: 'Job' },
+          { label: 'Registration', pattern: 'Registering' },
+          { label: 'Custom filter…', pattern: '__custom__' },
+        ],
+        { placeHolder: 'Filter log output' },
+      );
+      if (!filterPick) return;
+
+      let filterPattern: string | undefined;
+      if (filterPick.pattern === '__custom__') {
+        filterPattern = await vscode.window.showInputBox({ prompt: 'Enter CloudWatch filter pattern' }) ?? undefined;
+      } else {
+        filterPattern = filterPick.pattern;
+      }
+
+      const logsChannel = vscode.window.createOutputChannel(`Runners: ${env.name}`);
+      context.subscriptions.push(logsChannel);
+      logsChannel.show(true);
+
+      const cts = new vscode.CancellationTokenSource();
+      context.subscriptions.push(cts);
+
+      void runnersClient.tailLogs(env, logGroup, logsChannel, filterPattern, 30, cts.token);
+    }),
+
+  );
+
   // ── Chat participant ────────────────────────────────────────────────────────
 
   TerraformChatParticipant.register(context, services, outputChannel);
@@ -1321,6 +1533,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ── Language model tools ────────────────────────────────────────────────────
 
   registerTerraformTools(context, services, outputChannel);
+  registerRunnerTools(context, services, outputChannel);
 
   // ── Autonomous agent (djaboxx replacement protocol) ─────────────────────────
 

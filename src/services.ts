@@ -11,6 +11,7 @@ import { ActionlintRunner } from './workflows/ActionlintRunner.js';
 import { DriftDetector } from './workflows/DriftDetector.js';
 import { Telemetry } from './services/Telemetry.js';
 import { ProviderDocsCache } from './providers/ProviderDocsCache.js';
+import { GheRunnersClient } from './runners/GheRunnersClient.js';
 
 export interface ExtensionServices {
   auth: GithubAuthProvider;
@@ -30,4 +31,6 @@ export interface ExtensionServices {
   telemetry?: Telemetry;
   /** Optional — set after construction; depends on globalStoragePath. */
   providerDocs?: ProviderDocsCache;
+  /** Optional — manages GHE self-hosted runner environments. */
+  runnersClient?: GheRunnersClient;
 }

@@ -113,7 +113,7 @@
         "id": "terraform.dave",
         "fullName": "Dave",
         "name": "dave",
-        "description": "Everything @terraform does, but Dave does it better — and he knows it.",
+        "description": "Everything @terraform does, but Dave does it better \u2014 and he knows it.",
         "isSticky": true,
         "commands": [
           {
@@ -524,7 +524,7 @@
       {
         "name": "terraform_discover_workspace",
         "displayName": "Discover Terraform Workspace Defaults",
-        "modelDescription": "Auto-discovers reasonable defaults for the workspace config by scanning git remotes, .tf files (S3 backend, providers, regions, required_version), .tfvars files, .github/workflows YAML, and existing GitHub Environments. Returns a discovery summary AND a fully-populated suggested .vscode/terraform-workspace.json. Use this before asking the user for config values — most fields can be inferred. If `applyDefaults=true`, writes the config to disk; otherwise just returns it for review.",
+        "modelDescription": "Auto-discovers reasonable defaults for the workspace config by scanning git remotes, .tf files (S3 backend, providers, regions, required_version), .tfvars files, .github/workflows YAML, and existing GitHub Environments. Returns a discovery summary AND a fully-populated suggested .vscode/terraform-workspace.json. Use this before asking the user for config values \u2014 most fields can be inferred. If `applyDefaults=true`, writes the config to disk; otherwise just returns it for review.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -652,7 +652,7 @@
       {
         "name": "terraform_scaffold_backend",
         "displayName": "Scaffold S3 Terraform Backend",
-        "modelDescription": "Generates Terraform code for an S3 state bucket + DynamoDB lock table (the bootstrap a team writes once per AWS account). Returns the HCL — does not apply it. Use to bootstrap remote state for a new account.",
+        "modelDescription": "Generates Terraform code for an S3 state bucket + DynamoDB lock table (the bootstrap a team writes once per AWS account). Returns the HCL \u2014 does not apply it. Use to bootstrap remote state for a new account.",
         "inputSchema": {
           "type": "object",
           "required": [
@@ -683,7 +683,7 @@
       {
         "name": "terraform_scaffold_oidc_trust",
         "displayName": "Scaffold GitHub OIDC Trust Policy",
-        "modelDescription": "Generates an AWS IAM trust policy JSON allowing GitHub Actions in a specific org/repo/environment to AssumeRoleWithWebIdentity via OIDC. Returns the JSON — does not apply it.",
+        "modelDescription": "Generates an AWS IAM trust policy JSON allowing GitHub Actions in a specific org/repo/environment to AssumeRoleWithWebIdentity via OIDC. Returns the JSON \u2014 does not apply it.",
         "inputSchema": {
           "type": "object",
           "required": [
@@ -813,7 +813,7 @@
       {
         "name": "terraform_lookup_provider_doc",
         "displayName": "Lookup Provider Doc (version-pinned)",
-        "modelDescription": "Returns the official documentation page for a Terraform provider resource or data source at the EXACT version pinned in the workspace's `.terraform.lock.hcl`. Run `terraform init` first so the lock file exists. Docs are fetched from the public Terraform Registry on first use and cached locally per version. Use this instead of guessing argument names — it guarantees parity with the resolved provider version (which may lag behind `latest`). Provider must be passed as `<namespace>/<name>` (e.g. `hashicorp/aws`). Resource may be passed with or without the provider prefix (`s3_bucket` and `aws_s3_bucket` both work).",
+        "modelDescription": "Returns the official documentation page for a Terraform provider resource or data source at the EXACT version pinned in the workspace's `.terraform.lock.hcl`. Run `terraform init` first so the lock file exists. Docs are fetched from the public Terraform Registry on first use and cached locally per version. Use this instead of guessing argument names \u2014 it guarantees parity with the resolved provider version (which may lag behind `latest`). Provider must be passed as `<namespace>/<name>` (e.g. `hashicorp/aws`). Resource may be passed with or without the provider prefix (`s3_bucket` and `aws_s3_bucket` both work).",
         "inputSchema": {
           "type": "object",
           "required": [
@@ -955,7 +955,7 @@
       {
         "name": "terraform_scaffold_lambda_image",
         "displayName": "Scaffold Lambda container image pipeline",
-        "modelDescription": "Generates `infra/lambda-image-<functionName>/` with a packer.pkr.hcl + build.hcl (consumed by djaboxx/packer-pipeline) + ECR Terraform + Lambda+IAM Terraform. Uses partition-aware ARNs (data.aws_partition.current) so the output works in GovCloud (arn:aws-us-gov:*) and commercial. Supports optional VPC config (subnet + SG lookup by name tag), an optional CodeBuild project resource + StartBuild/BatchGetBuilds IAM policy (for long-running Lambda→CodeBuild patterns), and an optional Secrets Manager policy for GitHub token access. Also writes `src/handler.py` + `src/requirements.txt` skeletons (only if missing).",
+        "modelDescription": "Generates `infra/lambda-image-<functionName>/` with a packer.pkr.hcl + build.hcl (consumed by djaboxx/packer-pipeline) + ECR Terraform + Lambda+IAM Terraform. Uses partition-aware ARNs (data.aws_partition.current) so the output works in GovCloud (arn:aws-us-gov:*) and commercial. Supports optional VPC config (subnet + SG lookup by name tag), an optional CodeBuild project resource + StartBuild/BatchGetBuilds IAM policy (for long-running Lambda\u2192CodeBuild patterns), and an optional Secrets Manager policy for GitHub token access. Also writes `src/handler.py` + `src/requirements.txt` skeletons (only if missing).",
         "inputSchema": {
           "type": "object",
           "required": [
@@ -1201,7 +1201,7 @@
       {
         "name": "terraform_dry_render_sc_product",
         "displayName": "Dry-render Service Catalog form inputs against schema",
-        "modelDescription": "Validates a sample SC form inputs object against a JSON schema (the same shape the SC dispatcher Lambda receives). Pure local validation — no AWS calls. Catches missing required fields, enum mismatches, regex failures, length/range violations. Use this to verify a form change before users encounter it in the SC console.",
+        "modelDescription": "Validates a sample SC form inputs object against a JSON schema (the same shape the SC dispatcher Lambda receives). Pure local validation \u2014 no AWS calls. Catches missing required fields, enum mismatches, regex failures, length/range violations. Use this to verify a form change before users encounter it in the SC console.",
         "inputSchema": {
           "type": "object",
           "required": [
@@ -1223,7 +1223,7 @@
       {
         "name": "terraform_scaffold_python_dev_env",
         "displayName": "Scaffold Python developer inner-loop for a Lambda image dir",
-        "modelDescription": "Layers a Python developer environment onto an existing infra/lambda-image-<fn>/ directory: pyproject.toml (pinned to the base-image Python version with pytest+ruff+mypy+moto+pip-tools dev deps), Makefile (install/test/lint/typecheck/freeze), .python-version, .devcontainer/devcontainer.json (no Docker — Codespaces-friendly), .vscode/launch.json (Local invoke + pytest debug configs), tests/conftest.py with a lambda_context fixture, tests/test_handler.py smoke test, tests/events/sample.json, and scripts/local_invoke.py (stdlib-only driver). Existing files are skipped, never overwritten. Fully Docker-free.",
+        "modelDescription": "Layers a Python developer environment onto an existing infra/lambda-image-<fn>/ directory: pyproject.toml (pinned to the base-image Python version with pytest+ruff+mypy+moto+pip-tools dev deps), Makefile (install/test/lint/typecheck/freeze), .python-version, .devcontainer/devcontainer.json (no Docker \u2014 Codespaces-friendly), .vscode/launch.json (Local invoke + pytest debug configs), tests/conftest.py with a lambda_context fixture, tests/test_handler.py smoke test, tests/events/sample.json, and scripts/local_invoke.py (stdlib-only driver). Existing files are skipped, never overwritten. Fully Docker-free.",
         "inputSchema": {
           "type": "object",
           "required": [
@@ -1255,7 +1255,7 @@
             "region": {
               "type": "string",
               "pattern": "^[a-z]{2}-[a-z]+-\\d+$",
-              "description": "Optional AWS region — baked into the devcontainer post-create env."
+              "description": "Optional AWS region \u2014 baked into the devcontainer post-create env."
             }
           }
         }
@@ -1329,6 +1329,105 @@
             }
           }
         }
+      },
+      {
+        "name": "ghe_runner_get_status",
+        "displayName": "Get GHE Runner Status",
+        "modelDescription": "Returns the current health of self-hosted GitHub Actions runner environments: ECS running/desired/pending task counts, ECS service events, and the list of GitHub-side runners with their status (idle/busy/offline). Use this first when diagnosing runner issues. Optionally narrows to a single named environment (e.g. 'csvd-dev-ew').",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "environment": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional environment name filter, e.g. 'csvd-dev-ew'."
+            }
+          }
+        }
+      },
+      {
+        "name": "ghe_runner_refresh_token",
+        "displayName": "Force Runner Token Refresh",
+        "modelDescription": "Invokes the Lambda token-refresh function for a runner environment. This writes a fresh GitHub registration token into Secrets Manager so that ECS tasks can re-register with GitHub if they restart. Use when: token expiry deadlock is suspected, runners are failing to register, or as a precautionary step before forcing a redeploy.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "environment": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Runner environment name."
+            }
+          }
+        }
+      },
+      {
+        "name": "ghe_runner_force_redeploy",
+        "displayName": "Force Runner Redeployment",
+        "modelDescription": "Triggers a force-new-deployment of the ECS service running the GitHub Actions runners. All running tasks are replaced with fresh containers that re-register with GitHub using the token in Secrets Manager. Use when runners are stuck, offline, or consuming a stale token. Always refresh the token first if token expiry may be a factor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "environment": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Runner environment name."
+            }
+          }
+        }
+      },
+      {
+        "name": "ghe_runner_scale",
+        "displayName": "Scale GHE Runners",
+        "modelDescription": "Updates the ECS desired task count for a runner environment. Use to scale up (handle workflow queue buildup), scale down (reduce cost), or scale to zero (emergency stop). Warning: scaling to zero immediately stops all workflow execution. Changes via this tool are temporary and will be overwritten by the next tf apply.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "desiredCount"
+          ],
+          "properties": {
+            "environment": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Runner environment name."
+            },
+            "desiredCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "description": "New desired ECS task count."
+            }
+          }
+        }
+      },
+      {
+        "name": "ghe_runner_get_logs",
+        "displayName": "Get GHE Runner Logs",
+        "modelDescription": "Fetches recent CloudWatch log events from the ECS runner log group (last 30 minutes by default). Useful for diagnosing registration failures, job errors, or connectivity issues. Supports CloudWatch filter patterns (e.g. 'error', 'Job', 'Registering'). Returns up to 100 log lines.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "environment": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Runner environment name."
+            },
+            "logGroup": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Explicit CloudWatch log group name. Auto-detected if omitted."
+            },
+            "filterPattern": {
+              "type": "string",
+              "description": "CloudWatch filter pattern, e.g. 'error' or 'Registering'."
+            },
+            "lines": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Number of log lines (default 50)."
+            }
+          }
+        }
       }
     ],
     "keybindings": [
@@ -1368,6 +1467,11 @@
           "id": "terraform.runs",
           "name": "Run History",
           "contextualTitle": "Terraform Runs"
+        },
+        {
+          "id": "terraform.runners",
+          "name": "GHE Runners",
+          "contextualTitle": "GitHub Actions Runners"
         }
       ]
     },
@@ -1428,7 +1532,7 @@
       },
       {
         "command": "terraform.requiredSetup.setAll",
-        "title": "Set All Required Variables & Secrets…",
+        "title": "Set All Required Variables & Secrets\u2026",
         "icon": "$(checklist)",
         "category": "Terraform"
       },
@@ -1440,12 +1544,12 @@
       },
       {
         "command": "terraform.requiredSetup.set",
-        "title": "Set Required Value…",
+        "title": "Set Required Value\u2026",
         "category": "Terraform"
       },
       {
         "command": "terraform.pinTerraformVersion",
-        "title": "Pin Terraform Version… (.terraform-version)",
+        "title": "Pin Terraform Version\u2026 (.terraform-version)",
         "icon": "$(versions)",
         "category": "Terraform"
       },
@@ -1457,67 +1561,67 @@
       },
       {
         "command": "terraform.scaffoldCodebuildExecutor",
-        "title": "Scaffold Executor Project…",
+        "title": "Scaffold Executor Project\u2026",
         "icon": "$(server-process)",
         "category": "CodeBuild"
       },
       {
         "command": "terraform.runPlanInCodeBuild",
-        "title": "Run Terraform Plan…",
+        "title": "Run Terraform Plan\u2026",
         "icon": "$(cloud-upload)",
         "category": "CodeBuild"
       },
       {
         "command": "terraform.runApplyInCodeBuild",
-        "title": "Run Terraform Apply…",
+        "title": "Run Terraform Apply\u2026",
         "icon": "$(cloud-upload)",
         "category": "CodeBuild"
       },
       {
         "command": "terraform.scaffoldLambdaImage",
-        "title": "Scaffold Container Image Project…",
+        "title": "Scaffold Container Image Project\u2026",
         "icon": "$(symbol-method)",
         "category": "Lambda"
       },
       {
         "command": "terraform.buildLambdaImage",
-        "title": "Build & Publish Image…",
+        "title": "Build & Publish Image\u2026",
         "icon": "$(cloud-upload)",
         "category": "Lambda"
       },
       {
         "command": "terraform.scaffoldServiceCatalogProduct",
-        "title": "Scaffold Product…",
+        "title": "Scaffold Product\u2026",
         "icon": "$(package)",
         "category": "Service Catalog"
       },
       {
         "command": "terraform.bumpServiceCatalogArtifact",
-        "title": "Bump Provisioning Artifact…",
+        "title": "Bump Provisioning Artifact\u2026",
         "icon": "$(versions)",
         "category": "Service Catalog"
       },
       {
         "command": "terraform.dryRenderServiceCatalogProduct",
-        "title": "Dry-render Product Form Inputs…",
+        "title": "Dry-render Product Form Inputs\u2026",
         "icon": "$(beaker)",
         "category": "Service Catalog"
       },
       {
         "command": "terraform.scaffoldPythonDevEnv",
-        "title": "Scaffold Python Dev Environment…",
+        "title": "Scaffold Python Dev Environment\u2026",
         "icon": "$(snake)",
         "category": "Lambda"
       },
       {
         "command": "terraform.invokeLambdaLocally",
-        "title": "Test Locally…",
+        "title": "Test Locally\u2026",
         "icon": "$(play)",
         "category": "Lambda"
       },
       {
         "command": "terraform.tailLambdaLogs",
-        "title": "Tail Function Logs…",
+        "title": "Tail Function Logs\u2026",
         "icon": "$(output)",
         "category": "Lambda"
       },
@@ -1583,13 +1687,13 @@
       },
       {
         "command": "terraform.scaffoldFromTemplate",
-        "title": "Scaffold Repo From Template…",
+        "title": "Scaffold Repo From Template\u2026",
         "icon": "$(repo-create)",
         "category": "Terraform"
       },
       {
         "command": "terraform.composeModules",
-        "title": "Compose Terraform Modules…",
+        "title": "Compose Terraform Modules\u2026",
         "icon": "$(combine)",
         "category": "Terraform"
       },
@@ -1652,6 +1756,36 @@
         "title": "Open Call Notes",
         "icon": "$(notebook)",
         "category": "Terraform"
+      },
+      {
+        "command": "terraform.runners.refresh",
+        "title": "Refresh Runners",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "terraform.runners.refreshEnvironment",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "terraform.runners.forceTokenRefresh",
+        "title": "Force Token Refresh",
+        "icon": "$(key)"
+      },
+      {
+        "command": "terraform.runners.forceRedeploy",
+        "title": "Force Redeploy",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "terraform.runners.scale",
+        "title": "Scale Runners\u2026",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "terraform.runners.viewLogs",
+        "title": "Tail Logs\u2026",
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -1701,6 +1835,21 @@
           "command": "terraform.requiredSetup.refresh",
           "when": "view == terraform.requiredSetup",
           "group": "navigation"
+        },
+        {
+          "command": "terraform.runners.refresh",
+          "when": "view == terraform.runners",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.runners.forceRedeploy",
+          "when": "view == terraform.runners",
+          "group": "navigation"
+        },
+        {
+          "command": "terraform.runners.forceTokenRefresh",
+          "when": "view == terraform.runners",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -1732,6 +1881,31 @@
         {
           "command": "terraform.openInGitHub",
           "when": "viewItem =~ /workspace|run/",
+          "group": "context"
+        },
+        {
+          "command": "terraform.runners.refreshEnvironment",
+          "when": "viewItem == runnerEnvironment",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.runners.forceTokenRefresh",
+          "when": "viewItem == runnerEnvironment",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.runners.forceRedeploy",
+          "when": "viewItem == runnerEnvironment",
+          "group": "inline"
+        },
+        {
+          "command": "terraform.runners.scale",
+          "when": "viewItem == runnerEnvironment",
+          "group": "context"
+        },
+        {
+          "command": "terraform.runners.viewLogs",
+          "when": "viewItem == runnerEnvironment",
           "group": "context"
         }
       ]
@@ -1888,6 +2062,56 @@
           "type": "boolean",
           "description": "Send anonymous usage telemetry. Off by default; respects VS Code's global telemetry setting.",
           "default": false
+        },
+        "terraformWorkspace.runners": {
+          "type": "array",
+          "default": [],
+          "description": "Manually configured GHE runner environments. Each entry supplements auto-discovery from ghe-runner Terraform workspace directories. Fields: name, awsRegion, ecsCluster, ecsService, desiredCount, lambdaFunctionName, githubOrg, githubUrl, repoPath.",
+          "items": {
+            "type": "object",
+            "required": [
+              "ecsCluster",
+              "ecsService"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name, e.g. 'csvd-dev-ew'"
+              },
+              "awsRegion": {
+                "type": "string",
+                "description": "AWS region, e.g. 'us-gov-west-1'"
+              },
+              "ecsCluster": {
+                "type": "string",
+                "description": "Full ECS cluster name"
+              },
+              "ecsService": {
+                "type": "string",
+                "description": "ECS service name (= GitHub org)"
+              },
+              "desiredCount": {
+                "type": "integer",
+                "description": "Expected runner count"
+              },
+              "lambdaFunctionName": {
+                "type": "string",
+                "description": "Token refresh Lambda function name"
+              },
+              "githubOrg": {
+                "type": "string",
+                "description": "GitHub organization name"
+              },
+              "githubUrl": {
+                "type": "string",
+                "description": "GitHub Enterprise URL"
+              },
+              "repoPath": {
+                "type": "string",
+                "description": "Absolute path to Terraform config dir"
+              }
+            }
+          }
         }
       }
     },
@@ -1917,7 +2141,7 @@
           {
             "id": "scaffold",
             "title": "Scaffold a new repo from a template",
-            "description": "Start here if you don't have a repo open yet. Generate a new GitHub repository from a template — no folder required.\n[Scaffold From Template](command:terraform.scaffoldFromTemplate)",
+            "description": "Start here if you don't have a repo open yet. Generate a new GitHub repository from a template \u2014 no folder required.\n[Scaffold From Template](command:terraform.scaffoldFromTemplate)",
             "media": {
               "markdown": "media/walkthrough/scaffold.md"
             }
@@ -1965,7 +2189,7 @@
           {
             "id": "chat",
             "title": "Operate via the chat participant",
-            "description": "Plans, variable resolution, drift checks, org-wide HCL search — all through `@terraform`.\n[Open Chat](command:workbench.action.chat.open?%7B%22query%22%3A%22%40terraform+%22%7D)",
+            "description": "Plans, variable resolution, drift checks, org-wide HCL search \u2014 all through `@terraform`.\n[Open Chat](command:workbench.action.chat.open?%7B%22query%22%3A%22%40terraform+%22%7D)",
             "media": {
               "markdown": "media/walkthrough/chat.md"
             }
@@ -1998,6 +2222,7 @@
     "test:vscode": "tsc -p test/vscode/tsconfig.json && node out/test-vscode/runTest.js",
     "coverage": "vitest run --coverage",
     "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "deploy-local": "node esbuild.js --production && node -e \"const fs=require('fs'),path=require('path'),os=require('os');const name='happypathway.terraform-workspace-'+require('./package.json').version;const candidates=[process.env.VSCODE_EXTENSIONS_DIR,path.join(os.homedir(),'.vscode-server','extensions'),path.join(os.homedir(),'.vscode','extensions')].filter(Boolean);let found;for(const base of candidates){try{const dirs=fs.readdirSync(base).filter(d=>d.startsWith(name));if(dirs.length){found=path.join(base,dirs[0],'dist','extension.js');break;}}catch{}}if(!found){console.error('Could not find installed extension. Set VSCODE_EXTENSIONS_DIR and retry.');process.exit(1);}fs.copyFileSync('dist/extension.js',found);console.log('Deployed to',found);\"",
     "install-latest": "bash scripts/install-latest.sh",
     "install-pre": "bash scripts/install-latest.sh --pre",
     "clean": "node -e \"const fs=require('fs');for(const p of ['dist','coverage','.vitest-cache']){try{fs.rmSync(p,{recursive:true,force:true})}catch{}};for(const f of fs.readdirSync('.')){if(f.endsWith('.vsix'))fs.rmSync(f)}\""
