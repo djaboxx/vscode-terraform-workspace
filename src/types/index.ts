@@ -241,10 +241,41 @@ export interface WorkspaceConfigEnvStateConfig {
   setBackend?: boolean;
 }
 
+/**
+ * Where the heavy `terraform plan/apply` work actually executes.
+ *  - `inline` (default): runs on the GitHub Actions runner that picked up the
+ *    job. This is the original behavior.
+ *  - `codebuild`: the GHA runner only acts as an orchestrator. It uploads the
+ *    repo to an S3 source bucket, calls `aws codebuild start-build` on a
+ *    pre-provisioned CodeBuild project, tails logs, then downloads the plan
+ *    artifact back from S3. The CodeBuild project's IAM role does the actual
+ *    AWS work, so workflow `awsAuthMode` only needs to authorize
+ *    `codebuild:StartBuild` + S3 source/artifact access.
+ *
+ *    Use this when running on GHE Server inside a locked-down enterprise
+ *    network where neither OIDC nor a CodeBuild webhook is available.
+ */
+export type WorkspaceExecutor = 'inline' | 'codebuild';
+
+export interface WorkspaceConfigCodeBuild {
+  /** CodeBuild project name (must already exist; provisioned via the scaffolder). */
+  project: string;
+  /** S3 bucket the GHA orchestrator uploads the repo zip to (= the project's S3 source). */
+  sourceBucket: string;
+  /** Optional S3 bucket the buildspec writes plan artifacts to. Defaults to `sourceBucket`. */
+  artifactBucket?: string;
+  /** AWS region of the CodeBuild project. Falls back to `AWS_REGION` env in the workflow. */
+  region?: string;
+}
+
 export interface WorkspaceConfigEnv {
   name: string;
   cacheBucket: string;
   runnerGroup?: string;
+  /** Per-env override for `WorkspaceConfig.executor`. */
+  executor?: WorkspaceExecutor;
+  /** Per-env override for `WorkspaceConfig.codebuild`. */
+  codebuild?: WorkspaceConfigCodeBuild;
   preventSelfReview?: boolean;
   waitTimer?: number;
   canAdminsBypass?: boolean;
@@ -327,6 +358,28 @@ export interface WorkspaceConfig {
   useGhaEnvironments?: boolean;
   /** Default Terraform/OpenTofu version, used when an env doesn't override and no `terraform_version` GHA var is set. */
   terraformVersion?: string;
+  /**
+   * AWS authentication mode used by the generated workflows.
+   *  - `oidc` (default): GitHub OIDC → STS AssumeRoleWithWebIdentity. Requires
+   *    `AWS_ROLE_TO_ASSUME` and an IAM trust policy. The job is granted
+   *    `permissions: id-token: write`.
+   *  - `access-keys`: long-lived IAM user keys passed via secrets
+   *    (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, optional
+   *    `AWS_SESSION_TOKEN`). May still assume a role afterwards if
+   *    `AWS_ROLE_TO_ASSUME` is set. No `id-token` permission requested.
+   *  - `profile`: rely on a self-hosted runner's pre-configured AWS profile or
+   *    instance role. The auth step only sets the region.
+   *  - `none`: skip the AWS auth step entirely (e.g. non-AWS backends).
+   */
+  awsAuthMode?: 'oidc' | 'access-keys' | 'profile' | 'none';
+  /**
+   * Where `terraform plan/apply` runs. Default `inline` (on the GHA runner).
+   * Set to `codebuild` to dispatch builds into AWS CodeBuild via
+   * `aws codebuild start-build`. Per-env `executor` overrides this.
+   */
+  executor?: WorkspaceExecutor;
+  /** Default CodeBuild dispatch settings. Per-env `codebuild` overrides this. */
+  codebuild?: WorkspaceConfigCodeBuild;
   /** HTTP(S) proxy passthrough — emitted as `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` env vars in workflow steps. */
   proxy?: WorkspaceConfigProxy;
   repo: WorkspaceConfigRepo;

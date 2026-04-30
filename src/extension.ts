@@ -11,10 +11,10 @@ import { ActionlintRunner } from './workflows/ActionlintRunner.js';
 import { DriftDetector } from './workflows/DriftDetector.js';
 import { HclDiagnosticsProvider } from './views/HclDiagnosticsProvider.js';
 import { TerraformResourceCodeLens } from './views/TerraformResourceCodeLens.js';
-import { runBackendBootstrap, runOidcTrustPolicy, runScaffoldFromTemplate } from './workflows/Scaffolders.js';
+import { runBackendBootstrap, runOidcTrustPolicy, runScaffoldFromTemplate, codebuildExecutorTf, codebuildExecutorBuildspec } from './workflows/Scaffolders.js';
 import { WorkspacesTreeProvider, WorkspaceTreeItem } from './views/WorkspacesTreeProvider.js';
 import { VariablesTreeProvider, VariableTreeItem } from './views/VariablesTreeProvider.js';
-import { RequiredSetupTreeProvider, RequiredSettingItem, REQUIRED_SETTINGS } from './views/RequiredSetupTreeProvider.js';
+import { RequiredSetupTreeProvider, RequiredSettingItem, requiredSettingsFor } from './views/RequiredSetupTreeProvider.js';
 import { RunsTreeProvider, RunTreeItem } from './views/RunsTreeProvider.js';
 import { WorkspaceConfigPanel } from './views/WorkspaceConfigPanel.js';
 import { ModuleComposerPanel } from './views/ModuleComposerPanel.js';
@@ -92,6 +92,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const drift = new DriftDetector(services, outputChannel);
   context.subscriptions.push(drift);
   services.drift = drift;
+
+  const { ProviderDocsCache } = await import('./providers/ProviderDocsCache.js');
+  const providerDocs = new ProviderDocsCache(context.globalStorageUri.fsPath);
+  services.providerDocs = providerDocs;
+
+  // Auto-refresh provider docs whenever a `.terraform.lock.hcl` changes.
+  // Fire-and-forget; runs in the background and does nothing if already cached.
+  const lockWatcher = vscode.workspace.createFileSystemWatcher('**/.terraform.lock.hcl');
+  context.subscriptions.push(lockWatcher);
+  const refreshDocsForLock = (uri: vscode.Uri): void => {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!folder) return;
+    void providerDocs.refreshAll(folder, {
+      onProgress: (msg) => outputChannel.appendLine(`[provider-docs] ${msg}`),
+    }).then((res) => {
+      if (res.updated.length) {
+        outputChannel.appendLine(
+          `[provider-docs] Updated docs for: ${res.updated.map((p) => `${p.namespace}/${p.name}@${p.version}`).join(', ')}`,
+        );
+      }
+      for (const f of res.failed) {
+        outputChannel.appendLine(`[provider-docs] Failed ${f.provider.namespace}/${f.provider.name}@${f.provider.version}: ${f.error}`);
+      }
+    }).catch((err) => outputChannel.appendLine(`[provider-docs] error: ${err}`));
+  };
+  context.subscriptions.push(lockWatcher.onDidCreate(refreshDocsForLock));
+  context.subscriptions.push(lockWatcher.onDidChange(refreshDocsForLock));
 
   const hclDiag = new HclDiagnosticsProvider();
   context.subscriptions.push(hclDiag);
@@ -388,6 +415,616 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       requiredSetupProvider.refresh();
     }),
 
+    vscode.commands.registerCommand('terraform.pinTerraformVersion', async () => {
+      const active = await configManager.getActive();
+      const folder = active?.folder ?? vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        vscode.window.showWarningMessage('Open a workspace folder first.');
+        return;
+      }
+      const pinUri = vscode.Uri.joinPath(folder.uri, '.terraform-version');
+      let current = '';
+      try {
+        const bytes = await vscode.workspace.fs.readFile(pinUri);
+        current = Buffer.from(bytes).toString('utf-8').trim();
+      } catch {
+        // file doesn't exist yet
+      }
+      const value = await vscode.window.showInputBox({
+        prompt: 'Terraform / OpenTofu version to pin (written to .terraform-version, honored by tfenv, asdf, and the workflow runner)',
+        value: current,
+        placeHolder: 'e.g. 1.9.5',
+        ignoreFocusOut: true,
+        validateInput: v => v.trim() === '' ? 'Version is required' : undefined,
+      });
+      if (!value) return;
+      try {
+        await vscode.workspace.fs.writeFile(pinUri, Buffer.from(value.trim() + '\n', 'utf-8'));
+        vscode.window.showInformationMessage(
+          `Pinned Terraform version to ${value.trim()} in .terraform-version. Re-run "Terraform: Sync Workflows" to propagate.`,
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to write .terraform-version: ${String(err)}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.refreshProviderDocs', async (arg?: { force?: boolean }) => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        vscode.window.showWarningMessage('Open a workspace folder first.');
+        return;
+      }
+      if (!services.providerDocs) {
+        vscode.window.showWarningMessage('Provider docs cache is not initialized.');
+        return;
+      }
+      const force = arg?.force === true;
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Refreshing provider docs\u2026' },
+        async (progress) => {
+          const res = await services.providerDocs!.refreshAll(folder, {
+            force,
+            onProgress: (msg) => progress.report({ message: msg }),
+          });
+          const parts: string[] = [];
+          if (res.updated.length) parts.push(`updated ${res.updated.length}`);
+          if (res.skipped.length) parts.push(`cached ${res.skipped.length}`);
+          if (res.failed.length) parts.push(`failed ${res.failed.length}`);
+          if (!parts.length) parts.push('no providers found in any .terraform.lock.hcl');
+          vscode.window.showInformationMessage(`Provider docs: ${parts.join(', ')}.`);
+          for (const f of res.failed) {
+            outputChannel.appendLine(
+              `[provider-docs] ${f.provider.namespace}/${f.provider.name}@${f.provider.version}: ${f.error}`,
+            );
+          }
+        },
+      );
+    }),
+
+    vscode.commands.registerCommand('terraform.scaffoldCodebuildExecutor', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+      const active = await configManager.getActive();
+      const defaultRepo = active ? `${active.config.repo.repoOrg}/${active.config.repo.name}` : '';
+      const region = await vscode.window.showInputBox({ prompt: 'AWS region', value: 'us-east-1' });
+      if (!region) return;
+      const repoFullName = await vscode.window.showInputBox({ prompt: 'GitHub <owner>/<repo>', value: defaultRepo });
+      if (!repoFullName) return;
+      const projectName = await vscode.window.showInputBox({ prompt: 'CodeBuild project name', value: `tf-executor-${(active?.config.repo.name ?? 'workspace')}` });
+      if (!projectName) return;
+      const sourceBucketName = await vscode.window.showInputBox({ prompt: 'S3 source/artifact bucket name (will be created)', value: `${projectName}-src` });
+      if (!sourceBucketName) return;
+      const tfModule = codebuildExecutorTf({ region, repoFullName, projectName, sourceBucketName });
+      const buildspec = codebuildExecutorBuildspec();
+      const dir = vscode.Uri.joinPath(folder.uri, 'infra', `codebuild-executor-${projectName}`);
+      await vscode.workspace.fs.createDirectory(dir);
+      const mainUri = vscode.Uri.joinPath(dir, 'main.tf');
+      const buildspecUri = vscode.Uri.joinPath(dir, 'buildspec.yml');
+      await vscode.workspace.fs.writeFile(mainUri, Buffer.from(tfModule, 'utf-8'));
+      await vscode.workspace.fs.writeFile(buildspecUri, Buffer.from(buildspec, 'utf-8'));
+      const doc = await vscode.workspace.openTextDocument(mainUri);
+      await vscode.window.showTextDocument(doc);
+      vscode.window.showInformationMessage(
+        `CodeBuild executor scaffolded at ${dir.fsPath}. Run \`terraform init && terraform apply\` there, then add the "executor"/"codebuild" block to .vscode/terraform-workspace.json.`,
+      );
+    }),
+
+    vscode.commands.registerCommand('terraform.runPlanInCodeBuild',  () => runInCodeBuild('plan',  configManager, outputChannel)),
+    vscode.commands.registerCommand('terraform.runApplyInCodeBuild', () => runInCodeBuild('apply', configManager, outputChannel)),
+
+    vscode.commands.registerCommand('terraform.scaffoldLambdaImage', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+      const functionName = await vscode.window.showInputBox({
+        prompt: 'Lambda function name (used for the dir, ECR repo, and Lambda name)',
+        validateInput: (v) => /^[A-Za-z0-9_-]{1,64}$/.test(v) ? null : 'Use 1-64 chars: letters, digits, _ or -',
+      });
+      if (!functionName) return;
+      const region = await vscode.window.showInputBox({ prompt: 'AWS region', value: 'us-east-1' });
+      if (!region) return;
+      const packerCodebuildProject = await vscode.window.showInputBox({
+        prompt: 'Existing packer-pipeline CodeBuild project name',
+        value: 'packer-pipeline',
+      });
+      if (!packerCodebuildProject) return;
+      const packerSourceBucket = await vscode.window.showInputBox({
+        prompt: 'S3 bucket the packer-pipeline project reads sources from',
+        value: `${packerCodebuildProject}-src`,
+      });
+      if (!packerSourceBucket) return;
+      const baseImage = await vscode.window.showInputBox({
+        prompt: 'Lambda base image (Enter for python:3.12)',
+        value: 'public.ecr.aws/lambda/python:3.12',
+      });
+      if (baseImage === undefined) return;
+
+      const m = await import('./lambda/LambdaImageScaffolder.js');
+      const inputs = { functionName, region, packerCodebuildProject, packerSourceBucket, baseImage };
+      const dir = vscode.Uri.joinPath(folder.uri, 'infra', `lambda-image-${functionName}`);
+      const srcDir = vscode.Uri.joinPath(dir, 'src');
+      await vscode.workspace.fs.createDirectory(srcDir);
+      const writes: Array<[vscode.Uri, string]> = [
+        [vscode.Uri.joinPath(dir, 'packer.pkr.hcl'), m.lambdaImagePackerHcl(inputs)],
+        [vscode.Uri.joinPath(dir, 'build.hcl'), m.lambdaImageBuildHcl(inputs)],
+        [vscode.Uri.joinPath(dir, 'ecr.tf'), m.lambdaImageEcrTf(inputs)],
+        [vscode.Uri.joinPath(dir, 'lambda.tf'), m.lambdaImageLambdaTf(inputs)],
+      ];
+      for (const [uri, content] of writes) {
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+      }
+      const handlerUri = vscode.Uri.joinPath(srcDir, 'handler.py');
+      try { await vscode.workspace.fs.stat(handlerUri); }
+      catch { await vscode.workspace.fs.writeFile(handlerUri, Buffer.from(m.lambdaHandlerSkeleton(inputs), 'utf-8')); }
+      const reqUri = vscode.Uri.joinPath(srcDir, 'requirements.txt');
+      try { await vscode.workspace.fs.stat(reqUri); }
+      catch { await vscode.workspace.fs.writeFile(reqUri, Buffer.from(m.lambdaImageRequirementsTxt(), 'utf-8')); }
+
+      const handler = await vscode.workspace.openTextDocument(handlerUri);
+      await vscode.window.showTextDocument(handler);
+      vscode.window.showInformationMessage(
+        `Lambda image scaffolded at ${dir.fsPath}. Edit src/handler.py, then run "Terraform: Build & Publish Lambda Image" once the ECR repo exists.`,
+      );
+    }),
+
+    vscode.commands.registerCommand('terraform.buildLambdaImage', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+
+      // Discover existing infra/lambda-image-* dirs and offer them.
+      let dirChoice: string | undefined;
+      try {
+        const infra = vscode.Uri.joinPath(folder.uri, 'infra');
+        const entries = await vscode.workspace.fs.readDirectory(infra);
+        const candidates = entries
+          .filter(([n, t]) => t === vscode.FileType.Directory && n.startsWith('lambda-image-'))
+          .map(([n]) => `infra/${n}`);
+        if (candidates.length === 1) {
+          dirChoice = candidates[0];
+        } else if (candidates.length > 1) {
+          dirChoice = await vscode.window.showQuickPick(candidates, { placeHolder: 'Lambda image directory' });
+          if (!dirChoice) return;
+        }
+      } catch { /* no infra dir; fall through to manual entry */ }
+
+      const directory = dirChoice ?? await vscode.window.showInputBox({
+        prompt: 'Workspace-relative path to the lambda image dir',
+        value: 'infra/lambda-image-',
+      });
+      if (!directory) return;
+
+      const inferredName = directory.split('/').pop()?.replace(/^lambda-image-/, '') ?? '';
+      const functionName = await vscode.window.showInputBox({
+        prompt: 'Function name (also the ECR repo name)',
+        value: inferredName,
+        validateInput: (v) => /^[A-Za-z0-9_-]{1,64}$/.test(v) ? null : 'Use 1-64 chars: letters, digits, _ or -',
+      });
+      if (!functionName) return;
+      const region = await vscode.window.showInputBox({ prompt: 'AWS region', value: 'us-east-1' });
+      if (!region) return;
+      const packerCodebuildProject = await vscode.window.showInputBox({
+        prompt: 'packer-pipeline CodeBuild project name',
+        value: 'packer-pipeline',
+      });
+      if (!packerCodebuildProject) return;
+      const packerSourceBucket = await vscode.window.showInputBox({
+        prompt: 'packer-pipeline source S3 bucket',
+        value: `${packerCodebuildProject}-src`,
+      });
+      if (!packerSourceBucket) return;
+
+      const { LambdaImageDispatcher } = await import('./lambda/LambdaImageDispatcher.js');
+      const dispatcher = new LambdaImageDispatcher(outputChannel);
+      const dirUri = vscode.Uri.joinPath(folder.uri, directory);
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Building Lambda image: ${functionName}`, cancellable: true },
+        async (_progress, token) => {
+          try {
+            const res = await dispatcher.buildAndPublish({
+              region,
+              packerCodebuildProject,
+              sourceBucket: packerSourceBucket,
+              ecrRepoName: functionName,
+              imageTag: `build-${Date.now()}`,
+              workingDirectory: dirUri,
+              functionName,
+            }, token);
+            if (res.status === 'SUCCEEDED' && res.imageDigest) {
+              vscode.window.showInformationMessage(
+                `Image published: ${res.imageDigest}. Run \`terraform apply\` in ${directory} to deploy.`,
+              );
+            } else {
+              vscode.window.showErrorMessage(`Lambda image build ended: ${res.status}. See output channel.`);
+            }
+          } catch (err) {
+            vscode.window.showErrorMessage(`Lambda image build failed: ${(err as Error).message}`);
+          }
+        },
+      );
+    }),
+
+    vscode.commands.registerCommand('terraform.scaffoldServiceCatalogProduct', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+      const productName = await vscode.window.showInputBox({ prompt: 'Product name (1-100 chars)' });
+      if (!productName) return;
+      const portfolioId = await vscode.window.showInputBox({
+        prompt: 'Portfolio ID (port-…)',
+        validateInput: (v) => /^port-[a-z0-9]+$/.test(v) ? null : 'Must look like port-xxxxx',
+      });
+      if (!portfolioId) return;
+      const owner = await vscode.window.showInputBox({ prompt: 'Owner / team' });
+      if (!owner) return;
+      const supportEmail = await vscode.window.showInputBox({
+        prompt: 'Support email',
+        validateInput: (v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ? null : 'Not a valid email',
+      });
+      if (!supportEmail) return;
+      const templateBucket = await vscode.window.showInputBox({ prompt: 'S3 template bucket name' });
+      if (!templateBucket) return;
+      const templateKey = await vscode.window.showInputBox({ prompt: 'S3 template key (e.g. my-product/v1.yaml)' });
+      if (!templateKey) return;
+      const launchRoleName = await vscode.window.showInputBox({
+        prompt: 'IAM launch role name (SC will assume this to launch the product)',
+      });
+      if (!launchRoleName) return;
+      const region = await vscode.window.showInputBox({ prompt: 'AWS region', value: 'us-east-1' });
+      if (!region) return;
+
+      const { scProductTf } = await import('./servicecatalog/SCProductScaffolder.js');
+      const slug = productName.replace(/[^A-Za-z0-9_-]/g, '-').toLowerCase();
+      const dir = vscode.Uri.joinPath(folder.uri, 'infra', `sc-product-${slug}`);
+      await vscode.workspace.fs.createDirectory(dir);
+      const tfPath = vscode.Uri.joinPath(dir, 'product.tf');
+      await vscode.workspace.fs.writeFile(
+        tfPath,
+        Buffer.from(scProductTf({
+          productName, portfolioId, owner, supportEmail, templateBucket, templateKey, launchRoleName, region,
+        }), 'utf-8'),
+      );
+      const doc = await vscode.workspace.openTextDocument(tfPath);
+      await vscode.window.showTextDocument(doc);
+      vscode.window.showInformationMessage(
+        `Service Catalog product scaffolded at ${dir.fsPath}. Upload the template artifact, then \`terraform init && terraform apply\`.`,
+      );
+    }),
+
+    vscode.commands.registerCommand('terraform.bumpServiceCatalogArtifact', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+
+      // Discover existing infra/sc-product-* dirs.
+      let dirChoice: string | undefined;
+      try {
+        const infra = vscode.Uri.joinPath(folder.uri, 'infra');
+        const entries = await vscode.workspace.fs.readDirectory(infra);
+        const candidates = entries
+          .filter(([n, t]) => t === vscode.FileType.Directory && n.startsWith('sc-product-'))
+          .map(([n]) => `infra/${n}`);
+        if (candidates.length === 1) {
+          dirChoice = candidates[0];
+        } else if (candidates.length > 1) {
+          dirChoice = await vscode.window.showQuickPick(candidates, { placeHolder: 'SC product directory' });
+          if (!dirChoice) return;
+        }
+      } catch { /* no infra dir */ }
+
+      const directory = dirChoice ?? await vscode.window.showInputBox({
+        prompt: 'Workspace-relative SC product dir (containing product.tf)',
+        value: 'infra/sc-product-',
+      });
+      if (!directory) return;
+
+      const productResourceName = await vscode.window.showInputBox({
+        prompt: 'Terraform resource name of the existing product',
+        value: 'this',
+        validateInput: (v) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(v) ? null : 'Must be a valid HCL identifier',
+      });
+      if (!productResourceName) return;
+      const newVersion = await vscode.window.showInputBox({
+        prompt: 'New version (semver: MAJOR.MINOR.PATCH)',
+        validateInput: (v) => /^\d+\.\d+\.\d+$/.test(v) ? null : 'Must be MAJOR.MINOR.PATCH',
+      });
+      if (!newVersion) return;
+      const templateBucket = await vscode.window.showInputBox({ prompt: 'S3 template bucket' });
+      if (!templateBucket) return;
+      const templateKey = await vscode.window.showInputBox({ prompt: 'S3 key for the new template artifact' });
+      if (!templateKey) return;
+      const description = await vscode.window.showInputBox({ prompt: 'Optional description', value: `Bumped to ${newVersion}` });
+
+      const { scArtifactBumpTf } = await import('./servicecatalog/SCProductScaffolder.js');
+      const dir = vscode.Uri.joinPath(folder.uri, directory);
+      const out = vscode.Uri.joinPath(dir, `artifact-v${newVersion.replace(/\./g, '_')}.tf`);
+      try {
+        await vscode.workspace.fs.stat(out);
+        vscode.window.showWarningMessage(`Refusing to overwrite existing ${out.fsPath}.`);
+        return;
+      } catch { /* not present, proceed */ }
+      await vscode.workspace.fs.writeFile(
+        out,
+        Buffer.from(scArtifactBumpTf({ productResourceName, newVersion, templateBucket, templateKey, description }), 'utf-8'),
+      );
+      const doc = await vscode.workspace.openTextDocument(out);
+      await vscode.window.showTextDocument(doc);
+      vscode.window.showInformationMessage(`Wrote ${out.fsPath}. Run \`terraform plan\` to preview, then \`apply\`.`);
+    }),
+
+    vscode.commands.registerCommand('terraform.dryRenderServiceCatalogProduct', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+
+      const schemaUri = await vscode.window.showOpenDialog({
+        canSelectFiles: true, canSelectMany: false,
+        filters: { 'JSON Schema': ['json'] },
+        openLabel: 'Select JSON schema describing the SC form',
+      });
+      if (!schemaUri || schemaUri.length === 0) return;
+      const sampleUri = await vscode.window.showOpenDialog({
+        canSelectFiles: true, canSelectMany: false,
+        filters: { 'Sample inputs JSON': ['json'] },
+        openLabel: 'Select sample inputs JSON to validate',
+      });
+      if (!sampleUri || sampleUri.length === 0) return;
+
+      let schema: Record<string, unknown>;
+      let sample: Record<string, unknown>;
+      try {
+        schema = JSON.parse(Buffer.from(await vscode.workspace.fs.readFile(schemaUri[0])).toString('utf-8'));
+        sample = JSON.parse(Buffer.from(await vscode.workspace.fs.readFile(sampleUri[0])).toString('utf-8'));
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to parse JSON: ${(err as Error).message}`);
+        return;
+      }
+
+      const { scDryRender } = await import('./servicecatalog/SCProductScaffolder.js');
+      const result = scDryRender(schema as never, sample);
+      outputChannel.show(true);
+      outputChannel.appendLine('─── SC Form Dry-Render ───');
+      outputChannel.appendLine(`Schema: ${schemaUri[0].fsPath}`);
+      outputChannel.appendLine(`Sample: ${sampleUri[0].fsPath}`);
+      if (result.ok) {
+        outputChannel.appendLine('✓ Sample inputs are valid against the schema.');
+        vscode.window.showInformationMessage('Sample inputs are valid against the schema.');
+      } else {
+        outputChannel.appendLine('✗ Validation failed.');
+        if (result.missing.length) outputChannel.appendLine(`  Missing required: ${result.missing.join(', ')}`);
+        for (const inv of result.invalid) outputChannel.appendLine(`  ${inv.field}: ${inv.reason}`);
+        vscode.window.showErrorMessage(
+          `Form validation failed (${result.missing.length + result.invalid.length} issue(s)). See output.`,
+        );
+      }
+    }),
+
+    vscode.commands.registerCommand('terraform.scaffoldPythonDevEnv', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+
+      let dirChoice: string | undefined;
+      try {
+        const infra = vscode.Uri.joinPath(folder.uri, 'infra');
+        const entries = await vscode.workspace.fs.readDirectory(infra);
+        const candidates = entries
+          .filter(([n, t]) => t === vscode.FileType.Directory && n.startsWith('lambda-image-'))
+          .map(([n]) => `infra/${n}`);
+        if (candidates.length === 1) {
+          dirChoice = candidates[0];
+        } else if (candidates.length > 1) {
+          dirChoice = await vscode.window.showQuickPick(candidates, { placeHolder: 'Lambda image directory' });
+          if (!dirChoice) return;
+        }
+      } catch { /* no infra dir */ }
+
+      const directory = dirChoice ?? await vscode.window.showInputBox({
+        prompt: 'Workspace-relative path to the lambda image dir',
+        value: 'infra/lambda-image-',
+      });
+      if (!directory) return;
+
+      const inferredName = directory.split('/').pop()?.replace(/^lambda-image-/, '') ?? '';
+      const functionName = await vscode.window.showInputBox({
+        prompt: 'Function name',
+        value: inferredName,
+        validateInput: (v) => /^[A-Za-z0-9_-]{1,64}$/.test(v) ? null : 'Use 1-64 chars: letters, digits, _ or -',
+      });
+      if (!functionName) return;
+
+      // Try to detect python version from the existing packer.pkr.hcl base image.
+      let detectedPy = '3.12';
+      try {
+        const packerHcl = vscode.Uri.joinPath(folder.uri, directory, 'packer.pkr.hcl');
+        const text = Buffer.from(await vscode.workspace.fs.readFile(packerHcl)).toString('utf-8');
+        const { detectPythonVersionFromBaseImage } = await import('./lambda/PythonDevScaffolder.js');
+        const m = text.match(/image\s*=\s*"([^"]+)"/);
+        if (m) detectedPy = detectPythonVersionFromBaseImage(m[1]);
+      } catch { /* no packer.pkr.hcl yet */ }
+
+      const pythonVersion = await vscode.window.showInputBox({
+        prompt: 'Python version (must match the Lambda base image)',
+        value: detectedPy,
+        validateInput: (v) => /^3\.\d+$/.test(v) ? null : 'Must look like 3.12',
+      });
+      if (!pythonVersion) return;
+      const handler = await vscode.window.showInputBox({
+        prompt: 'Handler dotted path',
+        value: 'handler.lambda_handler',
+        validateInput: (v) => /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$/.test(v)
+          ? null : 'Must be dotted, e.g. handler.lambda_handler',
+      });
+      if (!handler) return;
+      const region = await vscode.window.showInputBox({
+        prompt: 'AWS region (optional, baked into devcontainer env)',
+        value: 'us-east-1',
+      });
+
+      const m = await import('./lambda/PythonDevScaffolder.js');
+      const inputs = { functionName, pythonVersion, handler, region: region || undefined };
+      const dir = vscode.Uri.joinPath(folder.uri, directory);
+      const writes: Array<[vscode.Uri, string]> = [
+        [vscode.Uri.joinPath(dir, 'pyproject.toml'), m.pythonPyprojectToml(inputs)],
+        [vscode.Uri.joinPath(dir, '.python-version'), m.pythonVersionFile(inputs)],
+        [vscode.Uri.joinPath(dir, 'Makefile'), m.pythonMakefile(inputs)],
+        [vscode.Uri.joinPath(dir, '.devcontainer', 'devcontainer.json'), m.pythonDevcontainer(inputs)],
+        [vscode.Uri.joinPath(dir, '.vscode', 'launch.json'), m.pythonLaunchJson(inputs)],
+        [vscode.Uri.joinPath(dir, 'tests', 'conftest.py'), m.pythonConftest()],
+        [vscode.Uri.joinPath(dir, 'tests', 'test_handler.py'), m.pythonTestHandler(inputs)],
+        [vscode.Uri.joinPath(dir, 'tests', 'events', 'sample.json'), m.pythonSampleEvent()],
+        [vscode.Uri.joinPath(dir, 'scripts', 'local_invoke.py'), m.pythonLocalInvokeScript()],
+      ];
+      const skipped: string[] = [];
+      const written: string[] = [];
+      for (const [uri, content] of writes) {
+        try {
+          await vscode.workspace.fs.stat(uri);
+          skipped.push(vscode.workspace.asRelativePath(uri));
+          continue;
+        } catch { /* not present */ }
+        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+        written.push(vscode.workspace.asRelativePath(uri));
+      }
+
+      const pyproj = vscode.Uri.joinPath(dir, 'pyproject.toml');
+      const doc = await vscode.workspace.openTextDocument(pyproj);
+      await vscode.window.showTextDocument(doc);
+      const summary = `Python dev env scaffolded (${written.length} written, ${skipped.length} skipped). Run \`make install && make test\` in ${directory}.`;
+      vscode.window.showInformationMessage(summary);
+    }),
+
+    vscode.commands.registerCommand('terraform.invokeLambdaLocally', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
+
+      let dirChoice: string | undefined;
+      try {
+        const infra = vscode.Uri.joinPath(folder.uri, 'infra');
+        const entries = await vscode.workspace.fs.readDirectory(infra);
+        const candidates = entries
+          .filter(([n, t]) => t === vscode.FileType.Directory && n.startsWith('lambda-image-'))
+          .map(([n]) => `infra/${n}`);
+        if (candidates.length === 1) {
+          dirChoice = candidates[0];
+        } else if (candidates.length > 1) {
+          dirChoice = await vscode.window.showQuickPick(candidates, { placeHolder: 'Lambda image directory' });
+          if (!dirChoice) return;
+        }
+      } catch { /* no infra dir */ }
+
+      const directory = dirChoice ?? await vscode.window.showInputBox({
+        prompt: 'Workspace-relative path to the lambda image dir',
+        value: 'infra/lambda-image-',
+      });
+      if (!directory) return;
+      const inferredName = directory.split('/').pop()?.replace(/^lambda-image-/, '') ?? 'local';
+
+      // Offer events/*.json files via QuickPick.
+      let eventPath: string | undefined;
+      const eventsDir = vscode.Uri.joinPath(folder.uri, directory, 'tests', 'events');
+      try {
+        const entries = await vscode.workspace.fs.readDirectory(eventsDir);
+        const jsons = entries
+          .filter(([n, t]) => t === vscode.FileType.File && n.endsWith('.json'))
+          .map(([n]) => `${directory}/tests/events/${n}`);
+        if (jsons.length > 0) {
+          jsons.push('Browse\u2026');
+          const pick = await vscode.window.showQuickPick(jsons, { placeHolder: 'Event JSON' });
+          if (!pick) return;
+          if (pick !== 'Browse\u2026') eventPath = pick;
+        }
+      } catch { /* no events dir */ }
+      if (!eventPath) {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectFiles: true, canSelectMany: false,
+          filters: { 'Event JSON': ['json'] },
+          openLabel: 'Select event JSON',
+        });
+        if (!picked || picked.length === 0) return;
+        eventPath = picked[0].fsPath;
+      }
+
+      const handler = await vscode.window.showInputBox({
+        prompt: 'Handler dotted path',
+        value: 'handler.lambda_handler',
+        validateInput: (v) => /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$/.test(v)
+          ? null : 'Must be dotted, e.g. handler.lambda_handler',
+      });
+      if (!handler) return;
+
+      const { LambdaLocalInvoker } = await import('./lambda/LambdaLocalInvoker.js');
+      const invoker = new LambdaLocalInvoker(outputChannel);
+      const dir = vscode.Uri.joinPath(folder.uri, directory);
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Invoking ${inferredName}\u2026`, cancellable: true },
+        async (_p, token) => {
+          try {
+            const res = await invoker.invoke({
+              workingDirectory: dir,
+              handler,
+              eventPath: eventPath!,
+              functionName: inferredName,
+            }, token);
+            if (res.exitCode === 0) {
+              vscode.window.showInformationMessage(`Local invoke succeeded (exit 0). See output.`);
+            } else {
+              vscode.window.showErrorMessage(`Local invoke exited ${res.exitCode}. See output.`);
+            }
+          } catch (err) {
+            vscode.window.showErrorMessage(`Local invoke failed: ${(err as Error).message}`);
+          }
+        },
+      );
+    }),
+
+    vscode.commands.registerCommand('terraform.tailLambdaLogs', async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      let suggestedFn = '';
+      if (folder) {
+        try {
+          const infra = vscode.Uri.joinPath(folder.uri, 'infra');
+          const entries = await vscode.workspace.fs.readDirectory(infra);
+          const fns = entries
+            .filter(([n, t]) => t === vscode.FileType.Directory && n.startsWith('lambda-image-'))
+            .map(([n]) => n.replace(/^lambda-image-/, ''));
+          if (fns.length === 1) {
+            suggestedFn = fns[0];
+          } else if (fns.length > 1) {
+            const pick = await vscode.window.showQuickPick([...fns, 'Other\u2026'], { placeHolder: 'Function to tail' });
+            if (!pick) return;
+            if (pick !== 'Other\u2026') suggestedFn = pick;
+          }
+        } catch { /* no infra dir */ }
+      }
+
+      const functionName = suggestedFn || await vscode.window.showInputBox({
+        prompt: 'Lambda function name',
+        validateInput: (v) => /^[A-Za-z0-9_-]{1,64}$/.test(v) ? null : 'Use 1-64 chars: letters, digits, _ or -',
+      });
+      if (!functionName) return;
+      const region = await vscode.window.showInputBox({ prompt: 'AWS region', value: 'us-east-1' });
+      if (!region) return;
+      const sinceStr = await vscode.window.showInputBox({
+        prompt: 'Look back this many minutes',
+        value: '5',
+        validateInput: (v) => /^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= 1440 ? null : '1-1440 minutes',
+      });
+      if (!sinceStr) return;
+
+      const { LambdaLogTailer } = await import('./lambda/LambdaLogTailer.js');
+      const tailer = new LambdaLogTailer(outputChannel);
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Tailing /aws/lambda/${functionName}`, cancellable: true },
+        async (_p, token) => {
+          try {
+            await tailer.tail({
+              region,
+              functionName,
+              sinceMinutes: Number(sinceStr),
+            }, token);
+          } catch (err) {
+            vscode.window.showErrorMessage(`Tail failed: ${(err as Error).message}`);
+          }
+        },
+      );
+    }),
+
     vscode.commands.registerCommand('terraform.requiredSetup.set', async (item?: RequiredSettingItem) => {
       if (!item) return;
       const active = await configManager.getActive();
@@ -440,9 +1077,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       const { repoOrg: owner, name: repo } = active.config.repo;
+      const settings = requiredSettingsFor(active.config.awsAuthMode ?? 'oidc');
 
       // Repository-scoped settings
-      for (const def of REQUIRED_SETTINGS.filter(d => d.scope === 'repository')) {
+      for (const def of settings.filter(d => d.scope === 'repository')) {
         const value = await vscode.window.showInputBox({
           prompt: `[Repository] ${def.kind === 'secret' ? 'Secret' : 'Variable'} ${def.name} \u2014 ${def.purpose}${def.optional ? ' (skip with Esc)' : ''}`,
           password: def.kind === 'secret',
@@ -475,7 +1113,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           ? []
           : await envsClient.listEnvironments(owner, repo);
         for (const env of envs) {
-          for (const def of REQUIRED_SETTINGS.filter(d => d.scope === 'environment')) {
+          for (const def of settings.filter(d => d.scope === 'environment')) {
             const value = await vscode.window.showInputBox({
               prompt: `[Env: ${env.name}] ${def.kind === 'secret' ? 'Secret' : 'Variable'} ${def.name} \u2014 ${def.purpose}`,
               password: def.kind === 'secret',
@@ -795,6 +1433,62 @@ export function deactivate(): void {
  * concurrent writes against `.github/workflows/`.
  */
 let syncInFlight: Promise<void> | undefined;
+
+/**
+ * Dispatches a Terraform plan/apply into the configured CodeBuild executor —
+ * same shape as the generated GHA workflow, but invoked locally from VS Code
+ * using the user's already-exported AWS env (e.g. via `awscreds`).
+ */
+async function runInCodeBuild(
+  command: 'plan' | 'apply',
+  configManager: WorkspaceConfigManager,
+  outputChannel: vscode.OutputChannel,
+): Promise<void> {
+  const active = await configManager.getActive();
+  if (!active) { vscode.window.showWarningMessage('No workspace config found.'); return; }
+  const cb = active.config.codebuild;
+  if (!cb) {
+    const pick = await vscode.window.showWarningMessage(
+      'No "codebuild" block in .vscode/terraform-workspace.json. Scaffold an executor first?',
+      'Scaffold Executor', 'Cancel',
+    );
+    if (pick === 'Scaffold Executor') vscode.commands.executeCommand('terraform.scaffoldCodebuildExecutor');
+    return;
+  }
+  const envs = getWorkspaces(active.config);
+  const envName = envs.length === 1
+    ? envs[0].name
+    : await vscode.window.showQuickPick(envs.map((e) => e.name), { title: `CodeBuild ${command}: workspace` });
+  if (!envName) return;
+  const region = cb.region ?? active.config.stateConfig?.region ?? 'us-east-1';
+  if (command === 'apply') {
+    const ok = await vscode.window.showWarningMessage(
+      `Run \`terraform apply\` for "${envName}" in CodeBuild project "${cb.project}"? This will modify infrastructure.`,
+      { modal: true }, 'Apply',
+    );
+    if (ok !== 'Apply') return;
+  }
+  const { CodeBuildDispatcher } = await import('./codebuild/CodeBuildDispatcher.js');
+  const dispatcher = new CodeBuildDispatcher(outputChannel);
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `CodeBuild ${command}: ${envName}`, cancellable: true },
+    async (_progress, token) => {
+      try {
+        const res = await dispatcher.dispatch({
+          region, project: cb.project, sourceBucket: cb.sourceBucket, artifactBucket: cb.artifactBucket,
+          workspace: envName, command, workingDirectory: active.folder.uri,
+        }, token);
+        if (res.status === 'SUCCEEDED') {
+          vscode.window.showInformationMessage(`CodeBuild ${command} succeeded for "${envName}". Artifacts: ${res.artifactsDir.fsPath}`);
+        } else {
+          vscode.window.showErrorMessage(`CodeBuild ${command} ended with status ${res.status} for "${envName}".`);
+        }
+      } catch (err) {
+        vscode.window.showErrorMessage(`CodeBuild ${command} failed: ${(err as Error).message}`);
+      }
+    },
+  );
+}
 
 /**
  * Auto-discover defaults for the active folder, show the user a summary, and

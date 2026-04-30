@@ -230,6 +230,14 @@ export class WorkspaceAutoDiscovery {
     if (backend) result.backend = backend;
     if (tfVersion) result.terraformVersion = tfVersion;
 
+    // Pin files (tfenv / asdf) take precedence over the `required_version`
+    // constraint because they're an explicit choice, not a constraint range.
+    const pinned = await readVersionPinFiles(folder);
+    if (pinned) {
+      result.terraformVersion = pinned.version;
+      result.notes.push(`Honoring \`${pinned.source}\` pin: \`${pinned.version}\`.`);
+    }
+
     if (result.providers.length > 0) {
       result.notes.push(`Detected providers: ${result.providers.map(p => p.name).join(', ')}.`);
     }
@@ -395,5 +403,39 @@ export function branchHintForEnv(env: string): string | undefined {
   if (e === 'staging' || e === 'stage' || e === 'preprod') return 'staging';
   if (e === 'dev' || e === 'develop' || e === 'development') return 'develop';
   if (e === 'qa' || e === 'test') return 'develop';
+  return undefined;
+}
+
+/**
+ * Reads tfenv (`.terraform-version`) and asdf (`.tool-versions`) pin files
+ * from the workspace root, returning the pinned Terraform/OpenTofu version
+ * if either is present. tfenv takes priority since it's terraform-specific.
+ */
+export async function readVersionPinFiles(
+  folder: vscode.WorkspaceFolder,
+): Promise<{ version: string; source: '.terraform-version' | '.tool-versions' } | undefined> {
+  const tfvUri = vscode.Uri.joinPath(folder.uri, '.terraform-version');
+  try {
+    const bytes = await vscode.workspace.fs.readFile(tfvUri);
+    const v = Buffer.from(bytes).toString('utf-8').trim();
+    if (v) return { version: v, source: '.terraform-version' };
+  } catch {
+    // not present — fall through
+  }
+
+  const tvUri = vscode.Uri.joinPath(folder.uri, '.tool-versions');
+  try {
+    const bytes = await vscode.workspace.fs.readFile(tvUri);
+    const text = Buffer.from(bytes).toString('utf-8');
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = /^(?:terraform|opentofu|tofu)\s+(\S+)/i.exec(line);
+      if (m) return { version: m[1], source: '.tool-versions' };
+    }
+  } catch {
+    // not present
+  }
+
   return undefined;
 }

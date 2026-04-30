@@ -1,5 +1,11 @@
 name: "Setup Terraform / OpenTofu"
-description: "Installs Terraform or OpenTofu CLI based on the TF_CLI env var (defaults to tofu)."
+description: |
+  Installs Terraform or OpenTofu CLI based on the TF_CLI env var (defaults to tofu).
+  Honors tfenv / asdf style version pin files in the repo:
+    - .terraform-version          (tfenv)
+    - .tool-versions              (asdf — line "terraform <ver>" or "opentofu <ver>")
+  Explicit `terraform-version` / `tofu-version` inputs always win, then env vars
+  TFENV_TERRAFORM_VERSION / OPENTOFU_VERSION, then the pin files, then "latest".
 
 inputs:
   cli:
@@ -7,13 +13,13 @@ inputs:
     required: false
     default: ""
   terraform-version:
-    description: "Terraform version (when cli=terraform)."
+    description: "Terraform version (when cli=terraform). Overrides .terraform-version / .tool-versions."
     required: false
-    default: "latest"
+    default: ""
   tofu-version:
-    description: "OpenTofu version (when cli=tofu)."
+    description: "OpenTofu version (when cli=tofu). Overrides .terraform-version / .tool-versions."
     required: false
-    default: "latest"
+    default: ""
 
 runs:
   using: "composite"
@@ -28,18 +34,55 @@ runs:
         fi
         echo "cli=$CLI" >> "$GITHUB_OUTPUT"
 
+    - name: "Resolve version (tfenv / asdf compatible)"
+      id: ver
+      shell: bash
+      run: |
+        CLI="${{ steps.cli.outputs.cli }}"
+        IN_TF="${{ inputs.terraform-version }}"
+        IN_TOFU="${{ inputs.tofu-version }}"
+
+        # Resolve from tfenv-style .terraform-version, then asdf .tool-versions.
+        FILE_VER=""
+        if [ -f .terraform-version ]; then
+          FILE_VER="$(tr -d '[:space:]' < .terraform-version)"
+        fi
+        if [ -z "$FILE_VER" ] && [ -f .tool-versions ]; then
+          if [ "$CLI" = "tofu" ]; then
+            FILE_VER="$(awk '$1=="opentofu" || $1=="tofu" {print $2; exit}' .tool-versions)"
+          else
+            FILE_VER="$(awk '$1=="terraform" {print $2; exit}' .tool-versions)"
+          fi
+        fi
+
+        if [ "$CLI" = "terraform" ]; then
+          VER="$IN_TF"
+          [ -z "$VER" ] && VER="${TFENV_TERRAFORM_VERSION:-}"
+          [ -z "$VER" ] && VER="$FILE_VER"
+          [ -z "$VER" ] && VER="latest"
+          echo "terraform=$VER" >> "$GITHUB_OUTPUT"
+          echo "Resolved Terraform version: $VER"
+        else
+          VER="$IN_TOFU"
+          [ -z "$VER" ] && VER="${OPENTOFU_VERSION:-}"
+          [ -z "$VER" ] && VER="$FILE_VER"
+          [ -z "$VER" ] && VER="latest"
+          echo "tofu=$VER" >> "$GITHUB_OUTPUT"
+          echo "Resolved OpenTofu version: $VER"
+        fi
+
     - name: "Setup Terraform"
       if: steps.cli.outputs.cli == 'terraform'
       uses: hashicorp/setup-terraform@v3
       with:
-        terraform_version: ${{ inputs.terraform-version }}
+        terraform_version: ${{ steps.ver.outputs.terraform }}
         terraform_wrapper: false
 
     - name: "Setup OpenTofu"
       if: steps.cli.outputs.cli == 'tofu'
       uses: opentofu/setup-opentofu@v1
       with:
-        tofu_version: ${{ inputs.tofu-version }}
+        tofu_version: ${{ steps.ver.outputs.tofu }}
         tofu_wrapper: false
 
     - name: "Verify install"

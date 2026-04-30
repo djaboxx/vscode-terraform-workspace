@@ -47,8 +47,10 @@ jobs:
       - name: "Checkout"
         uses: "actions/checkout@v4"
 
-      - name: "Configure AWS Credentials"
+      - name: "Configure AWS Credentials (OIDC)"
         uses: "./.github/actions/aws-auth"
+        with:
+          auth-mode: "oidc"
 
       - name: "Authenticate GitHub App"
         uses: "./.github/actions/gh-auth"

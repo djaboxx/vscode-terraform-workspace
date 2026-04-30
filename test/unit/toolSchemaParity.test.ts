@@ -19,6 +19,17 @@ import {
   ScaffoldOidcTrustInputSchema,
   ScaffoldFromTemplateInputSchema,
   ScaffoldModuleRepoInputSchema,
+  LookupProviderDocInputSchema,
+  ScaffoldCodebuildExecutorInputSchema,
+  DispatchCodebuildRunInputSchema,
+  ScaffoldLambdaImageInputSchema,
+  BuildLambdaImageInputSchema,
+  ScaffoldScProductInputSchema,
+  BumpScArtifactInputSchema,
+  DryRenderScProductInputSchema,
+  ScaffoldPythonDevEnvInputSchema,
+  InvokeLambdaLocallyInputSchema,
+  TailLambdaLogsInputSchema,
 } from '../../src/schemas/toolInputs.js';
 import type { CompiledSchema } from '../../src/schemas/defineSchema.js';
 
@@ -48,6 +59,17 @@ const TOOL_SCHEMAS: Record<string, CompiledSchema<unknown>> = {
   terraform_scaffold_oidc_trust: ScaffoldOidcTrustInputSchema as CompiledSchema<unknown>,
   terraform_scaffold_from_template: ScaffoldFromTemplateInputSchema as CompiledSchema<unknown>,
   terraform_scaffold_module_repo: ScaffoldModuleRepoInputSchema as CompiledSchema<unknown>,
+  terraform_lookup_provider_doc: LookupProviderDocInputSchema as CompiledSchema<unknown>,
+  terraform_scaffold_codebuild_executor: ScaffoldCodebuildExecutorInputSchema as CompiledSchema<unknown>,
+  terraform_dispatch_codebuild_run: DispatchCodebuildRunInputSchema as CompiledSchema<unknown>,
+  terraform_scaffold_lambda_image: ScaffoldLambdaImageInputSchema as CompiledSchema<unknown>,
+  terraform_build_lambda_image: BuildLambdaImageInputSchema as CompiledSchema<unknown>,
+  terraform_scaffold_sc_product: ScaffoldScProductInputSchema as CompiledSchema<unknown>,
+  terraform_bump_sc_artifact: BumpScArtifactInputSchema as CompiledSchema<unknown>,
+  terraform_dry_render_sc_product: DryRenderScProductInputSchema as CompiledSchema<unknown>,
+  terraform_scaffold_python_dev_env: ScaffoldPythonDevEnvInputSchema as CompiledSchema<unknown>,
+  terraform_invoke_lambda_locally: InvokeLambdaLocallyInputSchema as CompiledSchema<unknown>,
+  terraform_tail_lambda_logs: TailLambdaLogsInputSchema as CompiledSchema<unknown>,
 };
 
 /**

@@ -31,6 +31,28 @@ import {
   ScaffoldFromTemplateInput,
   ScaffoldModuleRepoInputSchema,
   ScaffoldModuleRepoInput,
+  LookupProviderDocInputSchema,
+  LookupProviderDocInput,
+  ScaffoldCodebuildExecutorInputSchema,
+  ScaffoldCodebuildExecutorInput,
+  DispatchCodebuildRunInputSchema,
+  DispatchCodebuildRunInput,
+  ScaffoldLambdaImageInputSchema,
+  ScaffoldLambdaImageInput,
+  BuildLambdaImageInputSchema,
+  BuildLambdaImageInput,
+  ScaffoldScProductInputSchema,
+  ScaffoldScProductInput,
+  BumpScArtifactInputSchema,
+  BumpScArtifactInput,
+  DryRenderScProductInputSchema,
+  DryRenderScProductInput,
+  ScaffoldPythonDevEnvInputSchema,
+  ScaffoldPythonDevEnvInput,
+  InvokeLambdaLocallyInputSchema,
+  InvokeLambdaLocallyInput,
+  TailLambdaLogsInputSchema,
+  TailLambdaLogsInput,
 } from '../schemas/toolInputs.js';
 import { CompiledSchema, formatSchemaErrors } from '../schemas/defineSchema.js';
 import { WorkspaceAutoDiscovery } from '../discovery/WorkspaceAutoDiscovery.js';
@@ -65,6 +87,17 @@ export function registerTerraformTools(
     vscode.lm.registerTool('terraform_scaffold_oidc_trust', new ScaffoldOidcTrustTool(services)),
     vscode.lm.registerTool('terraform_scaffold_from_template', new ScaffoldFromTemplateTool(services)),
     vscode.lm.registerTool('terraform_scaffold_module_repo', new ScaffoldModuleRepoTool(services)),
+    vscode.lm.registerTool('terraform_lookup_provider_doc', new LookupProviderDocTool(services)),
+    vscode.lm.registerTool('terraform_scaffold_codebuild_executor', new ScaffoldCodebuildExecutorTool()),
+    vscode.lm.registerTool('terraform_dispatch_codebuild_run', new DispatchCodebuildRunTool(services, outputChannel)),
+    vscode.lm.registerTool('terraform_scaffold_lambda_image', new ScaffoldLambdaImageTool()),
+    vscode.lm.registerTool('terraform_build_lambda_image', new BuildLambdaImageTool(outputChannel)),
+    vscode.lm.registerTool('terraform_scaffold_sc_product', new ScaffoldScProductTool()),
+    vscode.lm.registerTool('terraform_bump_sc_artifact', new BumpScArtifactTool()),
+    vscode.lm.registerTool('terraform_dry_render_sc_product', new DryRenderScProductTool()),
+    vscode.lm.registerTool('terraform_scaffold_python_dev_env', new ScaffoldPythonDevEnvTool()),
+    vscode.lm.registerTool('terraform_invoke_lambda_locally', new InvokeLambdaLocallyTool(outputChannel)),
+    vscode.lm.registerTool('terraform_tail_lambda_logs', new TailLambdaLogsTool(outputChannel)),
   );
 }
 
@@ -1482,6 +1515,423 @@ export class ScaffoldModuleRepoTool implements vscode.LanguageModelTool<Scaffold
       return textResult(lines.join('\n'));
     } catch (err) {
       return textResult(`Error scaffolding module repo: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+class LookupProviderDocTool implements vscode.LanguageModelTool<LookupProviderDocInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<LookupProviderDocInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(LookupProviderDocInputSchema, options.input, 'terraform_lookup_provider_doc');
+    if (!v.ok) return v.result;
+
+    const cache = this.services.providerDocs;
+    if (!cache) return textResult('Provider docs cache is not initialized.');
+
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+
+    const { provider, resource, category = 'resources', maxChars = 8000 } = v.value;
+    const parts = provider.split('/');
+    if (parts.length !== 2) {
+      return textResult(`Invalid provider "${provider}" — expected "<namespace>/<name>" (e.g. hashicorp/aws).`);
+    }
+    const [namespace, name] = parts;
+
+    // Find the pinned version from the workspace's lock files.
+    const pinned = (await cache.findPinnedProviders(folder)).find(
+      (p) => p.namespace === namespace && p.name === name,
+    );
+    if (!pinned) {
+      return textResult(
+        `Provider ${provider} is not pinned in any .terraform.lock.hcl in this workspace. Run \`terraform init\` first.`,
+      );
+    }
+    if (token.isCancellationRequested) return cancelledResult();
+
+    // Make sure docs are cached for this exact version.
+    if (!(await cache.isCached(pinned))) {
+      try {
+        await cache.fetchProvider(pinned);
+      } catch (err) {
+        return textResult(`Failed to fetch docs for ${provider}@${pinned.version}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (token.isCancellationRequested) return cancelledResult();
+
+    // Try slug variants: as given, with/without the `<name>_` prefix.
+    const slug = resource.replace(new RegExp(`^${name}_`), '');
+    const md =
+      (await cache.readDoc(pinned, category, slug)) ??
+      (await cache.readDoc(pinned, category, resource));
+
+    if (!md) {
+      const idx = await cache.loadIndex(pinned);
+      const available = idx?.entries
+        .filter((e) => e.category === category)
+        .slice(0, 30)
+        .map((e) => e.slug)
+        .join(', ') ?? '';
+      return textResult(
+        `No "${category}" doc found for "${resource}" in ${provider}@${pinned.version}.` +
+          (available ? `\n\nAvailable ${category} (first 30): ${available}` : ''),
+      );
+    }
+
+    const header = `# ${provider}@${pinned.version} \u2014 ${category}/${slug}\n\n`;
+    const body = md.length > maxChars ? md.slice(0, maxChars) + `\n\n_… truncated (${md.length - maxChars} more chars)._` : md;
+    return textResult(header + body);
+  }
+}
+
+// ─── ScaffoldCodebuildExecutorTool ────────────────────────────────────────────
+
+class ScaffoldCodebuildExecutorTool implements vscode.LanguageModelTool<ScaffoldCodebuildExecutorInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldCodebuildExecutorInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldCodebuildExecutorInputSchema, options.input, 'terraform_scaffold_codebuild_executor');
+    if (!v.ok) return v.result;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+    const { codebuildExecutorTf, codebuildExecutorBuildspec } = await import('../workflows/Scaffolders.js');
+    const tf = codebuildExecutorTf(v.value);
+    const buildspec = codebuildExecutorBuildspec();
+    const dir = vscode.Uri.joinPath(folder.uri, 'infra', `codebuild-executor-${v.value.projectName}`);
+    await vscode.workspace.fs.createDirectory(dir);
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'main.tf'), Buffer.from(tf, 'utf-8'));
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'buildspec.yml'), Buffer.from(buildspec, 'utf-8'));
+    return textResult(
+      `Scaffolded CodeBuild executor module at \`${dir.fsPath}\`.\n\n` +
+      `Next steps:\n` +
+      `1. \`cd "${dir.fsPath}" && terraform init && terraform apply\`\n` +
+      `2. Add to .vscode/terraform-workspace.json:\n` +
+      `   "executor": "codebuild",\n` +
+      `   "codebuild": { "project": "${v.value.projectName}", "sourceBucket": "${v.value.sourceBucketName}", "region": "${v.value.region}" }\n` +
+      `3. Re-run "Terraform: Sync Workflows" so the GHA workflows switch to CodeBuild dispatch.`,
+    );
+  }
+}
+
+// ─── DispatchCodebuildRunTool ─────────────────────────────────────────────────
+
+class DispatchCodebuildRunTool implements vscode.LanguageModelTool<DispatchCodebuildRunInput> {
+  constructor(
+    private readonly services: ExtensionServices,
+    private readonly outputChannel: vscode.OutputChannel,
+  ) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<DispatchCodebuildRunInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(DispatchCodebuildRunInputSchema, options.input, 'terraform_dispatch_codebuild_run');
+    if (!v.ok) return v.result;
+    const active = await this.services.configManager.getActive();
+    if (!active) return textResult('No workspace config found.');
+    const cb = active.config.codebuild;
+    if (!cb) return textResult('No "codebuild" block in workspace config. Run terraform_scaffold_codebuild_executor first, then add the codebuild config.');
+    const env = getWorkspaces(active.config).find((e) => e.name === v.value.workspace);
+    if (!env) return textResult(`Workspace "${v.value.workspace}" not found in config.`);
+    const region = cb.region ?? active.config.stateConfig?.region ?? 'us-east-1';
+    const { CodeBuildDispatcher } = await import('../codebuild/CodeBuildDispatcher.js');
+    const dispatcher = new CodeBuildDispatcher(this.outputChannel);
+    try {
+      const res = await dispatcher.dispatch({
+        region, project: cb.project, sourceBucket: cb.sourceBucket, artifactBucket: cb.artifactBucket,
+        workspace: v.value.workspace, command: v.value.command, workingDirectory: active.folder.uri,
+      }, token);
+      return textResult(
+        `CodeBuild ${v.value.command} for "${v.value.workspace}" ended with status: **${res.status}**\n` +
+        `Build ID: \`${res.buildId}\`\n` +
+        `Artifacts: \`${res.artifactsDir.fsPath}\``,
+      );
+    } catch (err) {
+      return textResult(`CodeBuild dispatch failed: ${(err as Error).message}`);
+    }
+  }
+}
+
+
+// ─── Lambda image tools (L1) ─────────────────────────────────────────────────
+
+class ScaffoldLambdaImageTool implements vscode.LanguageModelTool<ScaffoldLambdaImageInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldLambdaImageInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldLambdaImageInputSchema, options.input, 'terraform_scaffold_lambda_image');
+    if (!v.ok) return v.result;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+    const m = await import('../lambda/LambdaImageScaffolder.js');
+    const dir = vscode.Uri.joinPath(folder.uri, 'infra', `lambda-image-${v.value.functionName}`);
+    const srcDir = vscode.Uri.joinPath(dir, 'src');
+    await vscode.workspace.fs.createDirectory(srcDir);
+
+    const writes: Array<[vscode.Uri, string]> = [
+      [vscode.Uri.joinPath(dir, 'packer.pkr.hcl'), m.lambdaImagePackerHcl(v.value)],
+      [vscode.Uri.joinPath(dir, 'build.hcl'), m.lambdaImageBuildHcl(v.value)],
+      [vscode.Uri.joinPath(dir, 'ecr.tf'), m.lambdaImageEcrTf(v.value)],
+      [vscode.Uri.joinPath(dir, 'lambda.tf'), m.lambdaImageLambdaTf(v.value)],
+    ];
+    for (const [uri, content] of writes) {
+      await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+    }
+
+    // Only write skeletons if missing — never clobber user code.
+    const handlerUri = vscode.Uri.joinPath(srcDir, 'handler.py');
+    if (!(await fileExists(handlerUri))) {
+      await vscode.workspace.fs.writeFile(handlerUri, Buffer.from(m.lambdaHandlerSkeleton(v.value), 'utf-8'));
+    }
+    const reqUri = vscode.Uri.joinPath(srcDir, 'requirements.txt');
+    if (!(await fileExists(reqUri))) {
+      await vscode.workspace.fs.writeFile(reqUri, Buffer.from(m.lambdaImageRequirementsTxt(), 'utf-8'));
+    }
+
+    return textResult(
+      `Scaffolded Lambda image at \`${dir.fsPath}\`.\n\n` +
+      `Next steps:\n` +
+      `1. Edit src/handler.py.\n` +
+      `2. \`cd "${dir.fsPath}" && terraform init && terraform apply -target=aws_ecr_repository.fn\` (creates the repo first).\n` +
+      `3. Run \`terraform_build_lambda_image\` (or the "Build & Publish Lambda Image" command) to build + push + capture the digest.\n` +
+      `4. \`terraform apply\` again — the captured digest in terraform.tfvars.json will pin the function image.`,
+    );
+  }
+}
+
+class BuildLambdaImageTool implements vscode.LanguageModelTool<BuildLambdaImageInput> {
+  constructor(private readonly outputChannel: vscode.OutputChannel) {}
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<BuildLambdaImageInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(BuildLambdaImageInputSchema, options.input, 'terraform_build_lambda_image');
+    if (!v.ok) return v.result;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+    const dir = vscode.Uri.joinPath(folder.uri, v.value.directory);
+    const { LambdaImageDispatcher } = await import('../lambda/LambdaImageDispatcher.js');
+    const dispatcher = new LambdaImageDispatcher(this.outputChannel);
+    try {
+      const res = await dispatcher.buildAndPublish({
+        region: v.value.region,
+        packerCodebuildProject: v.value.packerCodebuildProject,
+        sourceBucket: v.value.packerSourceBucket,
+        ecrRepoName: v.value.ecrRepoName,
+        imageTag: v.value.imageTag ?? `build-${Date.now()}`,
+        workingDirectory: dir,
+        functionName: v.value.functionName,
+      }, token);
+      const lines = [
+        `Lambda image build for "${v.value.functionName}" ended with status: **${res.status}**`,
+        `Build ID: \`${res.buildId}\``,
+      ];
+      if (res.imageDigest) lines.push(`Digest: \`${res.imageDigest}\``);
+      if (res.imageUri) lines.push(`Image: \`${res.imageUri}\``);
+      if (res.tfvarsPath) lines.push(`Wrote pinning: \`${res.tfvarsPath}\``);
+      return textResult(lines.join('\n'));
+    } catch (err) {
+      return textResult(`Lambda image build failed: ${(err as Error).message}`);
+    }
+  }
+}
+
+// ─── Service Catalog tools (L3 + L4) ─────────────────────────────────────────
+
+class ScaffoldScProductTool implements vscode.LanguageModelTool<ScaffoldScProductInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldScProductInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldScProductInputSchema, options.input, 'terraform_scaffold_sc_product');
+    if (!v.ok) return v.result;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+    const { scProductTf } = await import('../servicecatalog/SCProductScaffolder.js');
+    const slug = v.value.productName.replace(/[^A-Za-z0-9_-]/g, '-').toLowerCase();
+    const dir = vscode.Uri.joinPath(folder.uri, 'infra', `sc-product-${slug}`);
+    await vscode.workspace.fs.createDirectory(dir);
+    const tfPath = vscode.Uri.joinPath(dir, 'product.tf');
+    await vscode.workspace.fs.writeFile(tfPath, Buffer.from(scProductTf(v.value), 'utf-8'));
+    return textResult(
+      `Scaffolded SC product at \`${dir.fsPath}\`.\n\n` +
+      `Next steps:\n` +
+      `1. Upload your template artifact to s3://${v.value.templateBucket}/${v.value.templateKey}.\n` +
+      `2. \`cd "${dir.fsPath}" && terraform init && terraform apply\`.\n` +
+      `3. (optional) Use \`terraform_dry_render_sc_product\` to validate sample form inputs against your JSON schema before users hit the SC console.`,
+    );
+  }
+}
+
+class BumpScArtifactTool implements vscode.LanguageModelTool<BumpScArtifactInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<BumpScArtifactInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(BumpScArtifactInputSchema, options.input, 'terraform_bump_sc_artifact');
+    if (!v.ok) return v.result;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+    const { scArtifactBumpTf } = await import('../servicecatalog/SCProductScaffolder.js');
+    const dir = vscode.Uri.joinPath(folder.uri, v.value.directory);
+    const out = vscode.Uri.joinPath(dir, `artifact-v${v.value.newVersion.replace(/\./g, '_')}.tf`);
+    if (await fileExists(out)) {
+      return textResult(`Refusing to overwrite existing \`${out.fsPath}\`.`);
+    }
+    await vscode.workspace.fs.writeFile(out, Buffer.from(scArtifactBumpTf(v.value), 'utf-8'));
+    return textResult(
+      `Wrote \`${out.fsPath}\`.\n\n` +
+      `Run \`terraform plan\` in \`${dir.fsPath}\` to preview the new provisioning artifact, then \`apply\`. ` +
+      `Once nothing is referencing the previous version, set its \`active = false\`.`,
+    );
+  }
+}
+
+class DryRenderScProductTool implements vscode.LanguageModelTool<DryRenderScProductInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<DryRenderScProductInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(DryRenderScProductInputSchema, options.input, 'terraform_dry_render_sc_product');
+    if (!v.ok) return v.result;
+    const { scDryRender } = await import('../servicecatalog/SCProductScaffolder.js');
+    const result = scDryRender(v.value.schema as never, v.value.sample);
+    if (result.ok) {
+      return textResult(`✓ Sample inputs are valid against the schema.\n\nResolved:\n\`\`\`json\n${JSON.stringify(result.resolved, null, 2)}\n\`\`\``);
+    }
+    const lines = ['✗ Sample inputs failed validation.'];
+    if (result.missing.length) lines.push(`\nMissing required fields: ${result.missing.join(', ')}`);
+    if (result.invalid.length) {
+      lines.push('\nInvalid fields:');
+      for (const e of result.invalid) lines.push(`  - ${e.field}: ${e.reason}`);
+    }
+    return textResult(lines.join('\n'));
+  }
+}
+
+async function fileExists(uri: vscode.Uri): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(uri);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Python developer inner-loop (Phase A) ────────────────────────────────
+
+class ScaffoldPythonDevEnvTool implements vscode.LanguageModelTool<ScaffoldPythonDevEnvInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldPythonDevEnvInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldPythonDevEnvInputSchema, options.input, 'terraform_scaffold_python_dev_env');
+    if (!v.ok) return v.result;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+
+    const m = await import('../lambda/PythonDevScaffolder.js');
+    const inputs = {
+      functionName: v.value.functionName,
+      pythonVersion: v.value.pythonVersion,
+      handler: v.value.handler,
+      region: v.value.region,
+    };
+    const dir = vscode.Uri.joinPath(folder.uri, v.value.directory);
+    await vscode.workspace.fs.createDirectory(dir);
+
+    const writes: Array<[vscode.Uri, string]> = [
+      [vscode.Uri.joinPath(dir, 'pyproject.toml'), m.pythonPyprojectToml(inputs)],
+      [vscode.Uri.joinPath(dir, '.python-version'), m.pythonVersionFile(inputs)],
+      [vscode.Uri.joinPath(dir, 'Makefile'), m.pythonMakefile(inputs)],
+      [vscode.Uri.joinPath(dir, '.devcontainer', 'devcontainer.json'), m.pythonDevcontainer(inputs)],
+      [vscode.Uri.joinPath(dir, '.vscode', 'launch.json'), m.pythonLaunchJson(inputs)],
+      [vscode.Uri.joinPath(dir, 'tests', 'conftest.py'), m.pythonConftest()],
+      [vscode.Uri.joinPath(dir, 'tests', 'test_handler.py'), m.pythonTestHandler(inputs)],
+      [vscode.Uri.joinPath(dir, 'tests', 'events', 'sample.json'), m.pythonSampleEvent()],
+      [vscode.Uri.joinPath(dir, 'scripts', 'local_invoke.py'), m.pythonLocalInvokeScript()],
+    ];
+    const written: string[] = [];
+    const skipped: string[] = [];
+    for (const [uri, content] of writes) {
+      if (await fileExists(uri)) {
+        skipped.push(vscode.workspace.asRelativePath(uri));
+        continue;
+      }
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
+      await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+      written.push(vscode.workspace.asRelativePath(uri));
+    }
+
+    const lines = [`Python dev env scaffolded into \`${v.value.directory}\` (python ${v.value.pythonVersion}).`];
+    if (written.length) lines.push('\nWrote:\n' + written.map((p) => `  - \`${p}\``).join('\n'));
+    if (skipped.length) lines.push('\nSkipped (already exist):\n' + skipped.map((p) => `  - \`${p}\``).join('\n'));
+    lines.push('\nNext: `make install && make test` from the project dir.');
+    return textResult(lines.join('\n'));
+  }
+}
+
+class InvokeLambdaLocallyTool implements vscode.LanguageModelTool<InvokeLambdaLocallyInput> {
+  constructor(private readonly outputChannel: vscode.OutputChannel) {}
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<InvokeLambdaLocallyInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(InvokeLambdaLocallyInputSchema, options.input, 'terraform_invoke_lambda_locally');
+    if (!v.ok) return v.result;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+
+    const { LambdaLocalInvoker } = await import('../lambda/LambdaLocalInvoker.js');
+    const invoker = new LambdaLocalInvoker(this.outputChannel);
+    const dir = vscode.Uri.joinPath(folder.uri, v.value.directory);
+    try {
+      const res = await invoker.invoke({
+        workingDirectory: dir,
+        handler: v.value.handler,
+        eventPath: v.value.eventPath,
+        functionName: v.value.functionName,
+        pythonPath: v.value.pythonPath,
+      }, token);
+      const lines = [
+        `Local invoke of "${v.value.functionName}" exited with code ${res.exitCode}.`,
+        `Interpreter: \`${res.pythonPath}\``,
+      ];
+      if (res.stdout.trim()) lines.push(`\nstdout:\n\`\`\`\n${res.stdout.trim()}\n\`\`\``);
+      if (res.stderr.trim()) lines.push(`\nstderr:\n\`\`\`\n${res.stderr.trim()}\n\`\`\``);
+      return textResult(lines.join('\n'));
+    } catch (err) {
+      return textResult(`Local invoke failed: ${(err as Error).message}`);
+    }
+  }
+}
+
+class TailLambdaLogsTool implements vscode.LanguageModelTool<TailLambdaLogsInput> {
+  constructor(private readonly outputChannel: vscode.OutputChannel) {}
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<TailLambdaLogsInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(TailLambdaLogsInputSchema, options.input, 'terraform_tail_lambda_logs');
+    if (!v.ok) return v.result;
+    const { LambdaLogTailer } = await import('../lambda/LambdaLogTailer.js');
+    const tailer = new LambdaLogTailer(this.outputChannel);
+    try {
+      const code = await tailer.tail({
+        region: v.value.region,
+        functionName: v.value.functionName,
+        filterPattern: v.value.filterPattern,
+        sinceMinutes: v.value.sinceMinutes,
+      }, token);
+      return textResult(`Tail of /aws/lambda/${v.value.functionName} ended (exit ${code}). Streamed into the "Terraform Workspace" output channel.`);
+    } catch (err) {
+      return textResult(`Failed to tail logs: ${(err as Error).message}`);
     }
   }
 }

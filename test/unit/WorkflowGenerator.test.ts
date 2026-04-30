@@ -91,4 +91,29 @@ describe('WorkflowGenerator', () => {
     const [plan] = await gen.generateAll(baseConfig());
     expect(plan.yaml).toContain('varfile: "varfiles/dev.tfvars"');
   });
+
+  it('awsAuthMode=access-keys drops id-token permission and wires secret inputs', async () => {
+    const gen = new WorkflowGenerator(stubEnvsClient);
+    const [plan] = await gen.generateAll(baseConfig({ awsAuthMode: 'access-keys' }));
+    expect(plan.yaml).not.toContain('id-token: write');
+    expect(plan.yaml).toContain('auth-mode: "access-keys"');
+    expect(plan.yaml).toContain('aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}');
+    expect(plan.yaml).toContain('aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}');
+  });
+
+  it('awsAuthMode=profile drops id-token and emits profile step', async () => {
+    const gen = new WorkflowGenerator(stubEnvsClient);
+    const [plan] = await gen.generateAll(baseConfig({ awsAuthMode: 'profile' }));
+    expect(plan.yaml).not.toContain('id-token: write');
+    expect(plan.yaml).toContain('auth-mode: "profile"');
+    expect(plan.yaml).toContain('aws-profile: ${{ vars.AWS_PROFILE }}');
+  });
+
+  it('awsAuthMode=none skips the AWS auth step entirely', async () => {
+    const gen = new WorkflowGenerator(stubEnvsClient);
+    const [plan] = await gen.generateAll(baseConfig({ awsAuthMode: 'none' }));
+    expect(plan.yaml).not.toContain('id-token: write');
+    expect(plan.yaml).not.toContain('uses: "./.github/actions/aws-auth"');
+    expect(plan.yaml).toContain('AWS auth disabled');
+  });
 });

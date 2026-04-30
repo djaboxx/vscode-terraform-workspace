@@ -10,6 +10,7 @@ import { LocalActionsScaffolder } from './workflows/LocalActionsScaffolder.js';
 import { ActionlintRunner } from './workflows/ActionlintRunner.js';
 import { DriftDetector } from './workflows/DriftDetector.js';
 import { Telemetry } from './services/Telemetry.js';
+import { ProviderDocsCache } from './providers/ProviderDocsCache.js';
 
 export interface ExtensionServices {
   auth: GithubAuthProvider;
@@ -27,4 +28,6 @@ export interface ExtensionServices {
   drift?: DriftDetector;
   /** Optional — set after construction to avoid circular deps. */
   telemetry?: Telemetry;
+  /** Optional — set after construction; depends on globalStoragePath. */
+  providerDocs?: ProviderDocsCache;
 }

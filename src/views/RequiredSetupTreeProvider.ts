@@ -76,6 +76,80 @@ export const REQUIRED_SETTINGS: readonly RequiredSettingDef[] = [
   },
 ];
 
+/**
+ * Returns the subset of required vars/secrets for the given AWS auth mode.
+ *  - `oidc` (default): full set including `AWS_ROLE_TO_ASSUME` (env-scoped).
+ *  - `access-keys`: drops the env-scoped role var; adds repo-scoped
+ *    `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` secrets and the role var
+ *    becomes optional (chained AssumeRole).
+ *  - `profile`: drops AWS-credential settings entirely; runner provides them.
+ *  - `none`: drops ALL AWS settings (non-AWS backend).
+ */
+export function requiredSettingsFor(
+  mode: 'oidc' | 'access-keys' | 'profile' | 'none' = 'oidc',
+): readonly RequiredSettingDef[] {
+  // Settings that are not AWS-auth specific and apply to every mode.
+  const nonAws = REQUIRED_SETTINGS.filter(
+    (d) => d.usedBy !== 'aws-auth' && d.usedBy !== 'terraform-init / aws-auth',
+  );
+  // The shared region var is needed unless AWS auth is fully disabled.
+  const region = REQUIRED_SETTINGS.find((d) => d.name === 'TF_STATE_REGION')!;
+
+  switch (mode) {
+    case 'oidc':
+      return REQUIRED_SETTINGS;
+    case 'access-keys':
+      return [
+        {
+          name: 'AWS_ACCESS_KEY_ID',
+          kind: 'secret',
+          scope: 'repository',
+          usedBy: 'aws-auth',
+          purpose: 'IAM user access key ID for static-credential auth.',
+        },
+        {
+          name: 'AWS_SECRET_ACCESS_KEY',
+          kind: 'secret',
+          scope: 'repository',
+          usedBy: 'aws-auth',
+          purpose: 'IAM user secret access key for static-credential auth.',
+        },
+        {
+          name: 'AWS_SESSION_TOKEN',
+          kind: 'secret',
+          scope: 'repository',
+          usedBy: 'aws-auth',
+          purpose: 'Optional session token (only needed when using temporary STS credentials).',
+          optional: true,
+        },
+        {
+          name: 'AWS_ROLE_TO_ASSUME',
+          kind: 'variable',
+          scope: 'environment',
+          usedBy: 'aws-auth',
+          purpose: 'Optional chained AssumeRole target after authenticating with the access keys.',
+          optional: true,
+        },
+        ...nonAws,
+      ];
+    case 'profile':
+      return [
+        {
+          name: 'AWS_PROFILE',
+          kind: 'variable',
+          scope: 'repository',
+          usedBy: 'aws-auth',
+          purpose: 'Optional named profile selected on the self-hosted runner.',
+          optional: true,
+        },
+        region,
+        ...nonAws.filter((d) => d.name !== 'TF_STATE_REGION'),
+      ];
+    case 'none':
+      return nonAws;
+  }
+}
+
 /** Tree node: a scope grouping ("Repository" or "Env: <name>"). */
 export class RequiredScopeGroup extends vscode.TreeItem {
   constructor(
@@ -167,7 +241,8 @@ export class RequiredSetupTreeProvider implements vscode.TreeDataProvider<Requir
     }
 
     if (element instanceof RequiredScopeGroup) {
-      const defs = REQUIRED_SETTINGS.filter(d => d.scope === element.scope);
+      const mode = active.config.awsAuthMode ?? 'oidc';
+      const defs = requiredSettingsFor(mode).filter(d => d.scope === element.scope);
       if (defs.length === 0) return [];
 
       try {

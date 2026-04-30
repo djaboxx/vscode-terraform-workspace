@@ -24,6 +24,19 @@
       "type": "string",
       "description": "Default Terraform/OpenTofu version. Falls back to the `terraform_version` GitHub Actions variable when not set."
     },
+    "awsAuthMode": {
+      "type": "string",
+      "enum": ["oidc", "access-keys", "profile", "none"],
+      "default": "oidc",
+      "description": "AWS auth mode for generated workflows. `oidc` (default) requires AWS_ROLE_TO_ASSUME + IAM trust. `access-keys` uses AWS_ACCESS_KEY_ID/SECRET secrets (optionally still assumes a role). `profile` uses a self-hosted runner's pre-configured profile/instance role. `none` skips AWS auth entirely."
+    },
+    "executor": {
+      "type": "string",
+      "enum": ["inline", "codebuild"],
+      "default": "inline",
+      "description": "Where the heavy `terraform plan/apply` runs. `inline` (default) runs on the GHA runner that picked up the job. `codebuild` makes the GHA job an orchestrator that uploads the repo to S3, calls `aws codebuild start-build`, tails logs, and downloads the plan back. Per-env `executor` overrides this."
+    },
+    "codebuild": { "$ref": "#/definitions/codebuild" },
     "proxy": {
       "type": "object",
       "additionalProperties": false,
@@ -88,6 +101,12 @@
         "name": { "type": "string", "description": "GitHub Environment name (= terraform workspace name)." },
         "cacheBucket": { "type": "string", "description": "S3 bucket used for plan/apply artifact caching." },
         "runnerGroup": { "type": "string" },
+        "executor": {
+          "type": "string",
+          "enum": ["inline", "codebuild"],
+          "description": "Per-env override of the top-level `executor`."
+        },
+        "codebuild": { "$ref": "#/definitions/codebuild" },
         "preventSelfReview": { "type": "boolean" },
         "waitTimer": { "type": "integer", "minimum": 0, "maximum": 43200 },
         "canAdminsBypass": { "type": "boolean" },
@@ -182,6 +201,18 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
         "value": { "type": "string" }
+      }
+    },
+    "codebuild": {
+      "type": "object",
+      "required": ["project", "sourceBucket"],
+      "additionalProperties": false,
+      "description": "AWS CodeBuild dispatch settings used when executor=codebuild. The GHA orchestrator uploads a zip of the repo to sourceBucket, calls codebuild:StartBuild on `project`, tails CloudWatch logs, and downloads the plan artifact back from artifactBucket (defaults to sourceBucket).",
+      "properties": {
+        "project": { "type": "string", "description": "CodeBuild project name (must already exist; provision via the scaffolder)." },
+        "sourceBucket": { "type": "string", "description": "S3 bucket the GHA job uploads the repo zip to (= the project's S3 source)." },
+        "artifactBucket": { "type": "string", "description": "S3 bucket the buildspec writes plan artifacts to. Defaults to sourceBucket." },
+        "region": { "type": "string", "description": "AWS region of the CodeBuild project. Falls back to AWS_REGION env in the workflow." }
       }
     }
   }
