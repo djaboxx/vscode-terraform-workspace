@@ -54,10 +54,10 @@ echo "→  Using remote: $CHOSEN_REMOTE  ($REMOTE_URL)"
 #   https://github.example.com/owner/repo.git
 #   git@github.example.com:owner/repo.git
 
-if [[ "$REMOTE_URL" =~ ^https?://([^/]+)/([^/]+/[^/]+?)(\.git)?$ ]]; then
+if [[ "$REMOTE_URL" =~ ^https?://([^/]+)/([^/]+/[^/]+?)(\..+)?$ ]]; then
   GH_HOST="${BASH_REMATCH[1]}"
   REPO="${BASH_REMATCH[2]}"
-elif [[ "$REMOTE_URL" =~ ^git@([^:]+):([^/]+/[^/]+?)(\.git)?$ ]]; then
+elif [[ "$REMOTE_URL" =~ ^git@([^:]+):([^/]+/[^/]+?)(\..+)?$ ]]; then
   GH_HOST="${BASH_REMATCH[1]}"
   REPO="${BASH_REMATCH[2]}"
 else
@@ -71,6 +71,9 @@ if [[ "$GH_HOST" != "github.com" ]]; then
   GH_HOST_FLAG=(--hostname "$GH_HOST")
 fi
 
+# Strip any trailing .git (or other extension) from the repo slug
+REPO="${REPO%.git}"
+
 echo "→  Host: $GH_HOST  |  Repo: $REPO"
 
 # ── Download ───────────────────────────────────────────────────────────────────
@@ -79,7 +82,7 @@ if [[ "$mode" == "--pre" ]]; then
   echo "⬇  Downloading latest branch build artifact …"
   RUN_ID="$(gh run list "${GH_HOST_FLAG[@]}" \
     --repo "$REPO" \
-    --workflow release.yml \
+    --workflow .github/workflows/release.yml \
     --branch main \
     --status success \
     --limit 1 \
