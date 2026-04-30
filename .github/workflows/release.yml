@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*.*.*'
+    branches:
+      - main
+      - master
 
 permissions:
   contents: write
@@ -23,19 +26,33 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        # --ignore-scripts avoids native-addon compile failures (e.g. better-sqlite3)
+        # on runners that lack the right build toolchain; esbuild still bundles fine.
+        run: npm ci --ignore-scripts
 
       - name: Build (production)
         run: npm run build
 
       - name: Package extension
-        run: npx vsce package --no-dependencies
+        run: npx --yes @vscode/vsce package --no-dependencies
 
       - name: Get .vsix filename
         id: vsix
         run: echo "FILE=$(ls *.vsix)" >> "$GITHUB_OUTPUT"
 
+      # ── On every push to main: upload as a workflow artifact (easy install without a tag)
+      - name: Upload vsix artifact (branch builds)
+        if: github.ref_type == 'branch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-workspace-latest
+          path: ${{ steps.vsix.outputs.FILE }}
+          retention-days: 30
+          overwrite: true
+
+      # ── On tags: create a proper GitHub Release
       - name: Create GitHub Release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.vsix.outputs.FILE }}
@@ -43,12 +60,15 @@ jobs:
           fail_on_unmatched_files: true
 
       - name: Publish to VS Code Marketplace
-        run: npx vsce publish --no-dependencies --packagePath ${{ steps.vsix.outputs.FILE }}
+        if: github.ref_type == 'tag'
+        run: npx --yes @vscode/vsce publish --no-dependencies --packagePath ${{ steps.vsix.outputs.FILE }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        continue-on-error: true
 
       - name: Publish to Open VSX Registry
-        run: npx ovsx publish ${{ steps.vsix.outputs.FILE }}
+        if: github.ref_type == 'tag'
+        run: npx --yes ovsx publish ${{ steps.vsix.outputs.FILE }}
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         continue-on-error: true

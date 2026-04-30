@@ -20,6 +20,7 @@ import { WorkspaceConfigPanel } from './views/WorkspaceConfigPanel.js';
 import { ModuleComposerPanel } from './views/ModuleComposerPanel.js';
 import { CallNotesPanel } from './views/CallNotesPanel.js';
 import { TerraformChatParticipant } from './chat/TerraformChatParticipant.js';
+import { DaveChatParticipant } from './chat/DaveChatParticipant.js';
 import { registerTerraformTools } from './tools/TerraformTools.js';
 import { WorkflowGenerator } from './workflows/WorkflowGenerator.js';
 import { TerraformFileCache } from './cache/TerraformFileCache.js';
@@ -645,46 +646,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('terraform.scaffoldServiceCatalogProduct', async () => {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) { vscode.window.showWarningMessage('Open a workspace folder first.'); return; }
-      const productName = await vscode.window.showInputBox({ prompt: 'Product name (1-100 chars)' });
-      if (!productName) return;
-      const portfolioId = await vscode.window.showInputBox({
-        prompt: 'Portfolio ID (port-…)',
-        validateInput: (v) => /^port-[a-z0-9]+$/.test(v) ? null : 'Must look like port-xxxxx',
+      const productSlug = await vscode.window.showInputBox({
+        prompt: 'Product slug (lowercase, hyphens OK — used for resource names and S3 bucket)',
+        validateInput: (v) => /^[a-z0-9-]{1,60}$/.test(v) ? null : 'Lowercase letters, digits, and hyphens only',
       });
-      if (!portfolioId) return;
-      const owner = await vscode.window.showInputBox({ prompt: 'Owner / team' });
+      if (!productSlug) return;
+      const portfolioName = await vscode.window.showInputBox({ prompt: 'Portfolio name (shown in SC console)' });
+      if (!portfolioName) return;
+      const owner = await vscode.window.showInputBox({ prompt: 'Owner / team (shown in SC console)' });
       if (!owner) return;
-      const supportEmail = await vscode.window.showInputBox({
-        prompt: 'Support email',
-        validateInput: (v) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ? null : 'Not a valid email',
+      const templateKey = await vscode.window.showInputBox({
+        prompt: 'S3 key for the CFN template (e.g. 2-0-0.yaml)',
+        value: '1-0-0.yaml',
       });
-      if (!supportEmail) return;
-      const templateBucket = await vscode.window.showInputBox({ prompt: 'S3 template bucket name' });
-      if (!templateBucket) return;
-      const templateKey = await vscode.window.showInputBox({ prompt: 'S3 template key (e.g. my-product/v1.yaml)' });
       if (!templateKey) return;
-      const launchRoleName = await vscode.window.showInputBox({
-        prompt: 'IAM launch role name (SC will assume this to launch the product)',
+      const lambdaArn = await vscode.window.showInputBox({
+        prompt: 'Lambda ARN the product invokes (leave blank to skip InvokeFunction policy)',
       });
-      if (!launchRoleName) return;
-      const region = await vscode.window.showInputBox({ prompt: 'AWS region', value: 'us-east-1' });
+      const region = await vscode.window.showInputBox({ prompt: 'AWS region', value: 'us-gov-west-1' });
       if (!region) return;
 
       const { scProductTf } = await import('./servicecatalog/SCProductScaffolder.js');
-      const slug = productName.replace(/[^A-Za-z0-9_-]/g, '-').toLowerCase();
-      const dir = vscode.Uri.joinPath(folder.uri, 'infra', `sc-product-${slug}`);
+      const dir = vscode.Uri.joinPath(folder.uri, 'infra', `sc-product-${productSlug}`);
       await vscode.workspace.fs.createDirectory(dir);
       const tfPath = vscode.Uri.joinPath(dir, 'product.tf');
       await vscode.workspace.fs.writeFile(
         tfPath,
         Buffer.from(scProductTf({
-          productName, portfolioId, owner, supportEmail, templateBucket, templateKey, launchRoleName, region,
+          productSlug, portfolioName, owner, templateKey, region,
+          lambdaArn: lambdaArn || undefined,
         }), 'utf-8'),
       );
       const doc = await vscode.workspace.openTextDocument(tfPath);
       await vscode.window.showTextDocument(doc);
       vscode.window.showInformationMessage(
-        `Service Catalog product scaffolded at ${dir.fsPath}. Upload the template artifact, then \`terraform init && terraform apply\`.`,
+        `Service Catalog product scaffolded at ${dir.fsPath}.\n` +
+        `Copy your product-template.yaml there, then \`terraform init && terraform apply\`.`,
       );
     }),
 
@@ -1319,6 +1316,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ── Chat participant ────────────────────────────────────────────────────────
 
   TerraformChatParticipant.register(context, services, outputChannel);
+  DaveChatParticipant.register(context, services, outputChannel);
 
   // ── Language model tools ────────────────────────────────────────────────────
 

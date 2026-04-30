@@ -1754,7 +1754,7 @@ class ScaffoldScProductTool implements vscode.LanguageModelTool<ScaffoldScProduc
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) return textResult('No workspace folder open.');
     const { scProductTf } = await import('../servicecatalog/SCProductScaffolder.js');
-    const slug = v.value.productName.replace(/[^A-Za-z0-9_-]/g, '-').toLowerCase();
+    const slug = v.value.productSlug;
     const dir = vscode.Uri.joinPath(folder.uri, 'infra', `sc-product-${slug}`);
     await vscode.workspace.fs.createDirectory(dir);
     const tfPath = vscode.Uri.joinPath(dir, 'product.tf');
@@ -1762,9 +1762,10 @@ class ScaffoldScProductTool implements vscode.LanguageModelTool<ScaffoldScProduc
     return textResult(
       `Scaffolded SC product at \`${dir.fsPath}\`.\n\n` +
       `Next steps:\n` +
-      `1. Upload your template artifact to s3://${v.value.templateBucket}/${v.value.templateKey}.\n` +
+      `1. Copy your \`product-template.yaml\` into \`${dir.fsPath}/\`.\n` +
       `2. \`cd "${dir.fsPath}" && terraform init && terraform apply\`.\n` +
-      `3. (optional) Use \`terraform_dry_render_sc_product\` to validate sample form inputs against your JSON schema before users hit the SC console.`,
+      `   Terraform creates the S3 bucket, uploads the template, creates the portfolio/product, and wires the launch constraint automatically.\n` +
+      `3. (optional) Use \`terraform_dryrender_sc_product\` to validate sample form inputs against your JSON schema before users hit the SC console.`,
     );
   }
 }
@@ -1787,8 +1788,8 @@ class BumpScArtifactTool implements vscode.LanguageModelTool<BumpScArtifactInput
     await vscode.workspace.fs.writeFile(out, Buffer.from(scArtifactBumpTf(v.value), 'utf-8'));
     return textResult(
       `Wrote \`${out.fsPath}\`.\n\n` +
-      `Run \`terraform plan\` in \`${dir.fsPath}\` to preview the new provisioning artifact, then \`apply\`. ` +
-      `Once nothing is referencing the previous version, set its \`active = false\`.`,
+      `Run \`terraform plan\` in \`${dir.fsPath}\` to preview the new artifact, then \`apply\`. ` +
+      `The included \`null_resource\` will automatically deprecate the previous DEFAULT artifact via \`aws servicecatalog update-provisioning-artifact\` so it no longer appears in the SC launch form.`,
     );
   }
 }

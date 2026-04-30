@@ -108,6 +108,51 @@
             "description": "Search GitHub org repos for Terraform code examples and documentation"
           }
         ]
+      },
+      {
+        "id": "terraform.dave",
+        "fullName": "Dave",
+        "name": "dave",
+        "description": "Everything @terraform does, but Dave does it better — and he knows it.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "generate",
+            "description": "Generate new Terraform HCL from a description"
+          },
+          {
+            "name": "modify",
+            "description": "Modify existing Terraform files via diff preview"
+          },
+          {
+            "name": "plan",
+            "description": "Trigger a Terraform plan via GitHub Actions"
+          },
+          {
+            "name": "apply",
+            "description": "Trigger a Terraform apply via GitHub Actions"
+          },
+          {
+            "name": "explain",
+            "description": "Explain the current Terraform configuration"
+          },
+          {
+            "name": "workspace",
+            "description": "List or select Terraform workspaces (GitHub Environments)"
+          },
+          {
+            "name": "bootstrap",
+            "description": "Bootstrap a new repository with Terraform workspace patterns"
+          },
+          {
+            "name": "varset",
+            "description": "Manage variable sets for an organization"
+          },
+          {
+            "name": "search",
+            "description": "Search GitHub org repos for Terraform code examples"
+          }
+        ]
       }
     ],
     "languageModelTools": [
@@ -771,7 +816,10 @@
         "modelDescription": "Returns the official documentation page for a Terraform provider resource or data source at the EXACT version pinned in the workspace's `.terraform.lock.hcl`. Run `terraform init` first so the lock file exists. Docs are fetched from the public Terraform Registry on first use and cached locally per version. Use this instead of guessing argument names — it guarantees parity with the resolved provider version (which may lag behind `latest`). Provider must be passed as `<namespace>/<name>` (e.g. `hashicorp/aws`). Resource may be passed with or without the provider prefix (`s3_bucket` and `aws_s3_bucket` both work).",
         "inputSchema": {
           "type": "object",
-          "required": ["provider", "resource"],
+          "required": [
+            "provider",
+            "resource"
+          ],
           "properties": {
             "provider": {
               "type": "string",
@@ -783,7 +831,13 @@
             },
             "category": {
               "type": "string",
-              "enum": ["resources", "data-sources", "guides", "functions", "overview"],
+              "enum": [
+                "resources",
+                "data-sources",
+                "guides",
+                "functions",
+                "overview"
+              ],
               "description": "Doc category. Default `resources`."
             },
             "maxChars": {
@@ -801,18 +855,74 @@
         "modelDescription": "Generates a Terraform module under `infra/codebuild-executor-<projectName>/` that provisions an AWS CodeBuild project + S3 source bucket + IAM role used as the dispatched terraform executor (same shape as djaboxx/packer-pipeline). After the user runs `terraform apply` on the module, they should set `executor: 'codebuild'` and `codebuild: { project, sourceBucket, region }` in `.vscode/terraform-workspace.json` so generated workflows (and the local `terraform_dispatch_codebuild_run` tool) use it. Use this when the user is on GHE Server, has no OIDC, or otherwise wants the heavy terraform work to run in CodeBuild rather than on the GHA runner.",
         "inputSchema": {
           "type": "object",
-          "required": ["region", "repoFullName", "projectName", "sourceBucketName"],
+          "required": [
+            "region",
+            "repoFullName",
+            "projectName",
+            "sourceBucketName"
+          ],
           "properties": {
-            "region": { "type": "string", "description": "AWS region the project lives in (e.g. us-east-1, us-gov-west-1).", "pattern": "^[a-z]{2}-[a-z]+-\\d+$" },
-            "repoFullName": { "type": "string", "description": "GitHub <owner>/<repo>.", "pattern": "^[^/\\s]+/[^/\\s]+$" },
-            "projectName": { "type": "string", "description": "CodeBuild project name; also used as the IAM role prefix.", "pattern": "^[A-Za-z0-9._-]+$", "minLength": 2, "maxLength": 150 },
-            "sourceBucketName": { "type": "string", "description": "Name of the S3 bucket the module creates (used for source uploads + plan artifacts).", "pattern": "^[a-z0-9.-]{3,63}$" },
-            "image": { "type": "string", "description": "Optional CodeBuild image. Default aws/codebuild/amazonlinux2-x86_64-standard:5.0." },
-            "computeType": { "type": "string", "enum": ["BUILD_GENERAL1_SMALL", "BUILD_GENERAL1_MEDIUM", "BUILD_GENERAL1_LARGE", "BUILD_GENERAL1_2XLARGE"], "description": "Optional compute type. Default BUILD_GENERAL1_MEDIUM." },
-            "terraformVersion": { "type": "string", "description": "Terraform version the buildspec installs. Default 1.9.5." },
-            "stateBucketArns": { "type": "array", "items": { "type": "string", "pattern": "^arn:aws[a-z-]*:s3:::[^/]+$" }, "description": "Optional state bucket ARN(s) the executor role needs read/write on." },
-            "lockTableArn": { "type": "string", "pattern": "^arn:aws[a-z-]*:dynamodb:", "description": "Optional DynamoDB lock table ARN." },
-            "extraManagedPolicyArns": { "type": "array", "items": { "type": "string", "pattern": "^arn:aws[a-z-]*:iam::" }, "description": "Optional managed-policy ARNs to attach (e.g. AdministratorAccess for sandbox)." }
+            "region": {
+              "type": "string",
+              "description": "AWS region the project lives in (e.g. us-east-1, us-gov-west-1).",
+              "pattern": "^[a-z]{2}-[a-z]+-\\d+$"
+            },
+            "repoFullName": {
+              "type": "string",
+              "description": "GitHub <owner>/<repo>.",
+              "pattern": "^[^/\\s]+/[^/\\s]+$"
+            },
+            "projectName": {
+              "type": "string",
+              "description": "CodeBuild project name; also used as the IAM role prefix.",
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "minLength": 2,
+              "maxLength": 150
+            },
+            "sourceBucketName": {
+              "type": "string",
+              "description": "Name of the S3 bucket the module creates (used for source uploads + plan artifacts).",
+              "pattern": "^[a-z0-9.-]{3,63}$"
+            },
+            "image": {
+              "type": "string",
+              "description": "Optional CodeBuild image. Default aws/codebuild/amazonlinux2-x86_64-standard:5.0."
+            },
+            "computeType": {
+              "type": "string",
+              "enum": [
+                "BUILD_GENERAL1_SMALL",
+                "BUILD_GENERAL1_MEDIUM",
+                "BUILD_GENERAL1_LARGE",
+                "BUILD_GENERAL1_2XLARGE"
+              ],
+              "description": "Optional compute type. Default BUILD_GENERAL1_MEDIUM."
+            },
+            "terraformVersion": {
+              "type": "string",
+              "description": "Terraform version the buildspec installs. Default 1.9.5."
+            },
+            "stateBucketArns": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^arn:aws[a-z-]*:s3:::[^/]+$"
+              },
+              "description": "Optional state bucket ARN(s) the executor role needs read/write on."
+            },
+            "lockTableArn": {
+              "type": "string",
+              "pattern": "^arn:aws[a-z-]*:dynamodb:",
+              "description": "Optional DynamoDB lock table ARN."
+            },
+            "extraManagedPolicyArns": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^arn:aws[a-z-]*:iam::"
+              },
+              "description": "Optional managed-policy ARNs to attach (e.g. AdministratorAccess for sandbox)."
+            }
           }
         }
       },
@@ -822,31 +932,111 @@
         "modelDescription": "Triggers a `terraform plan` or `terraform apply` for the named workspace inside the CodeBuild project configured under `codebuild` in `.vscode/terraform-workspace.json`. Same flow as the generated GHA workflow: zips the working directory, uploads to S3, calls codebuild:StartBuild, tails CloudWatch logs into the output channel, downloads plan artifacts back. Requires AWS credentials in the user's environment (e.g. via `awscreds`). For `apply`, prompts the user for confirmation before running.",
         "inputSchema": {
           "type": "object",
-          "required": ["command", "workspace"],
+          "required": [
+            "command",
+            "workspace"
+          ],
           "properties": {
-            "command": { "type": "string", "enum": ["plan", "apply"], "description": "Which terraform subcommand to dispatch." },
-            "workspace": { "type": "string", "description": "Workspace/environment name to run against (must exist in workspace config)." }
+            "command": {
+              "type": "string",
+              "enum": [
+                "plan",
+                "apply"
+              ],
+              "description": "Which terraform subcommand to dispatch."
+            },
+            "workspace": {
+              "type": "string",
+              "description": "Workspace/environment name to run against (must exist in workspace config)."
+            }
           }
         }
       },
       {
         "name": "terraform_scaffold_lambda_image",
         "displayName": "Scaffold Lambda container image pipeline",
-        "modelDescription": "Generates `infra/lambda-image-<functionName>/` with a packer.pkr.hcl + build.hcl (consumed by djaboxx/packer-pipeline) + ECR Terraform + Lambda Terraform pinned by image digest via `terraform.tfvars.json`. Also writes `src/handler.py` + `src/requirements.txt` skeletons (only if missing). Use this when the user wants to manage a Lambda function whose runtime is a custom container image — e.g. a Service Catalog dispatcher Lambda that triggers CodeBuild.",
+        "modelDescription": "Generates `infra/lambda-image-<functionName>/` with a packer.pkr.hcl + build.hcl (consumed by djaboxx/packer-pipeline) + ECR Terraform + Lambda+IAM Terraform. Uses partition-aware ARNs (data.aws_partition.current) so the output works in GovCloud (arn:aws-us-gov:*) and commercial. Supports optional VPC config (subnet + SG lookup by name tag), an optional CodeBuild project resource + StartBuild/BatchGetBuilds IAM policy (for long-running Lambda→CodeBuild patterns), and an optional Secrets Manager policy for GitHub token access. Also writes `src/handler.py` + `src/requirements.txt` skeletons (only if missing).",
         "inputSchema": {
           "type": "object",
-          "required": ["functionName", "region", "packerSourceBucket", "packerCodebuildProject"],
+          "required": [
+            "functionName",
+            "region",
+            "packerSourceBucket",
+            "packerCodebuildProject"
+          ],
           "properties": {
-            "functionName": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$", "description": "Logical function name (used for the dir, ECR repo, and Lambda name)." },
-            "region": { "type": "string", "pattern": "^[a-z]{2}-[a-z]+-\\d+$" },
-            "packerSourceBucket": { "type": "string", "pattern": "^[a-z0-9.-]{3,63}$", "description": "S3 bucket the existing packer-pipeline CodeBuild project reads sources from." },
-            "packerCodebuildProject": { "type": "string", "minLength": 2, "maxLength": 150, "description": "Name of the existing packer-pipeline CodeBuild project." },
-            "baseImage": { "type": "string", "description": "Base image (default public.ecr.aws/lambda/python:3.12)." },
-            "handler": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*$", "description": "Handler entrypoint (default handler.lambda_handler)." },
-            "memorySize": { "type": "number", "minimum": 128, "maximum": 10240 },
-            "timeout": { "type": "number", "minimum": 1, "maximum": 900 },
-            "envVars": { "type": "object", "additionalProperties": { "type": "string" } },
-            "extraManagedPolicyArns": { "type": "array", "items": { "type": "string", "pattern": "^arn:aws[a-z-]*:iam::" } }
+            "functionName": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "description": "Logical function name (used for the dir, ECR repo, and Lambda name)."
+            },
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z]{2}(-gov)?-[a-z]+-\\d+$"
+            },
+            "packerSourceBucket": {
+              "type": "string",
+              "pattern": "^[a-z0-9.-]{3,63}$",
+              "description": "S3 bucket the existing packer-pipeline CodeBuild project reads sources from."
+            },
+            "packerCodebuildProject": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 150,
+              "description": "Name of the existing packer-pipeline CodeBuild project."
+            },
+            "baseImage": {
+              "type": "string",
+              "description": "Base image (default public.ecr.aws/lambda/python:3.12)."
+            },
+            "handler": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*$",
+              "description": "Handler entrypoint (default handler.lambda_handler)."
+            },
+            "memorySize": {
+              "type": "number",
+              "minimum": 128,
+              "maximum": 10240
+            },
+            "timeout": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 900
+            },
+            "envVars": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "extraManagedPolicyArns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Extra managed-policy ARNs to attach. Use partition-aware ARNs (arn:aws-us-gov:iam::aws:policy/...) for GovCloud."
+            },
+            "subnetNameTag": {
+              "type": "string",
+              "description": "Name tag of the VPC subnet for Lambda VPC config. When set, also renders data.aws_subnet + vpc_config. Required for GHE/private-network access."
+            },
+            "securityGroupName": {
+              "type": "string",
+              "description": "Security group GroupName to look up when VPC is enabled (subnetNameTag is set)."
+            },
+            "codebuildProjectName": {
+              "type": "string",
+              "description": "When set, generates an aws_codebuild_project + IAM StartBuild/BatchGetBuilds policy. Use this when the Lambda's job is to trigger CodeBuild for long-running work."
+            },
+            "codebuildRoleName": {
+              "type": "string",
+              "description": "Name of an existing IAM role for the CodeBuild project. When omitted, a minimal role is created."
+            },
+            "githubTokenSecretName": {
+              "type": "string",
+              "description": "Secrets Manager secret name for a GitHub token. When set, adds a GetSecretValue IAM policy on the Lambda exec role."
+            }
           }
         }
       },
@@ -856,54 +1046,155 @@
         "modelDescription": "Zips the lambda image directory, uploads to S3, dispatches the existing packer-pipeline CodeBuild project, tails CloudWatch logs, then resolves the resulting ECR image digest and writes it to `terraform.tfvars.json` next to lambda.tf so the next `terraform apply` deploys the function pinned by digest (never tag).",
         "inputSchema": {
           "type": "object",
-          "required": ["functionName", "region", "packerSourceBucket", "packerCodebuildProject", "ecrRepoName", "directory"],
+          "required": [
+            "functionName",
+            "region",
+            "packerSourceBucket",
+            "packerCodebuildProject",
+            "ecrRepoName",
+            "directory"
+          ],
           "properties": {
-            "functionName": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
-            "region": { "type": "string", "pattern": "^[a-z]{2}-[a-z]+-\\d+$" },
-            "packerSourceBucket": { "type": "string", "pattern": "^[a-z0-9.-]{3,63}$" },
-            "packerCodebuildProject": { "type": "string", "minLength": 2, "maxLength": 150 },
-            "ecrRepoName": { "type": "string", "pattern": "^[a-z0-9._/-]{2,256}$", "description": "ECR repository name (NOT the URI)." },
-            "imageTag": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Tag to push (default `build-<timestamp>`). Digest is captured separately." },
-            "directory": { "type": "string", "minLength": 1, "description": "Workspace-relative path to the lambda image dir (e.g. infra/lambda-image-myfn)." }
+            "functionName": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z]{2}-[a-z]+-\\d+$"
+            },
+            "packerSourceBucket": {
+              "type": "string",
+              "pattern": "^[a-z0-9.-]{3,63}$"
+            },
+            "packerCodebuildProject": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 150
+            },
+            "ecrRepoName": {
+              "type": "string",
+              "pattern": "^[a-z0-9._/-]{2,256}$",
+              "description": "ECR repository name (NOT the URI)."
+            },
+            "imageTag": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Tag to push (default `build-<timestamp>`). Digest is captured separately."
+            },
+            "directory": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Workspace-relative path to the lambda image dir (e.g. infra/lambda-image-myfn)."
+            }
           }
         }
       },
       {
         "name": "terraform_scaffold_sc_product",
-        "displayName": "Scaffold Service Catalog product + portfolio assoc + launch constraint",
-        "modelDescription": "Generates `infra/sc-product-<slug>/product.tf` with `aws_servicecatalog_product` + initial provisioning artifact + `aws_servicecatalog_product_portfolio_association` + a LAUNCH constraint pointing at the supplied IAM role. The template artifact must already be uploaded to s3://<templateBucket>/<templateKey>. Use this when adding a new SC product to a portfolio.",
+        "displayName": "Scaffold Service Catalog product + portfolio + S3 bucket + launch role + constraint",
+        "modelDescription": "Generates `infra/sc-product-<slug>/product.tf` that creates: a dedicated S3 bucket for the CFN template (public-read, required for GovCloud launch-role access), the template as an `aws_s3_object`, an `aws_servicecatalog_portfolio`, an `aws_servicecatalog_product` with an initial dummy artifact, a separate `aws_servicecatalog_provisioning_artifact` (the real working artifact), a `null_resource` to deprecate the dummy via local-exec, an IAM launch role with CFN + s3:* + optional Lambda InvokeFunction, and a LAUNCH constraint. Place your product-template.yaml alongside product.tf before running `terraform apply`. Works correctly in GovCloud.",
         "inputSchema": {
           "type": "object",
-          "required": ["productName", "portfolioId", "owner", "supportEmail", "templateBucket", "templateKey", "launchRoleName", "region"],
+          "required": [
+            "productSlug",
+            "portfolioName",
+            "owner",
+            "templateKey",
+            "region"
+          ],
           "properties": {
-            "productName": { "type": "string", "minLength": 1, "maxLength": 100 },
-            "portfolioId": { "type": "string", "pattern": "^port-[a-z0-9]+$", "description": "SC portfolio ID (port-xxxxx)." },
-            "owner": { "type": "string" },
-            "supportEmail": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" },
-            "templateBucket": { "type": "string", "pattern": "^[a-z0-9.-]{3,63}$" },
-            "templateKey": { "type": "string", "minLength": 1 },
-            "launchRoleName": { "type": "string", "minLength": 1, "maxLength": 64, "description": "IAM role name SC will assume to launch the product." },
-            "region": { "type": "string", "pattern": "^[a-z]{2}-[a-z]+-\\d+$" },
-            "description": { "type": "string" },
-            "distributor": { "type": "string" },
-            "initialVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "Initial provisioning artifact version (default 1.0.0)." }
+            "productSlug": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,60}$",
+              "description": "Short slug used for resource names, directory, and S3 bucket name (lowercase, hyphens OK)."
+            },
+            "portfolioName": {
+              "type": "string",
+              "description": "Human-readable portfolio name shown in SC console."
+            },
+            "portfolioDescription": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            },
+            "templateKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "S3 key for the CFN template, e.g. '2-0-0.yaml'."
+            },
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z]{2}(-gov)?-[a-z]+-\\d+$"
+            },
+            "description": {
+              "type": "string"
+            },
+            "initialVersion": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$",
+              "description": "Initial provisioning artifact version (default 1.0.0)."
+            },
+            "lambdaArn": {
+              "type": "string",
+              "description": "Full Lambda ARN (including account ID) that the CFN Custom Resource invokes. Added to the launch role's InvokeFunction policy."
+            },
+            "principalArns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "IAM principal ARNs or IAM_PATTERN globs granted portfolio access."
+            },
+            "existingLaunchRoleName": {
+              "type": "string",
+              "description": "When set, looks up this existing IAM role instead of creating a new one."
+            }
           }
         }
       },
       {
         "name": "terraform_bump_sc_artifact",
         "displayName": "Bump Service Catalog provisioning artifact",
-        "modelDescription": "Writes an additive Terraform file (`artifact-v<version>.tf`) into an existing SC product directory that adds a new `aws_servicecatalog_provisioning_artifact` pointing at a new template artifact. Doesn't auto-disable previous versions (since in-flight provisioned products may still reference them) — surfaces that as a TODO. Use this for the day-to-day 'I changed the form, ship a new version' flow.",
+        "modelDescription": "Writes an additive Terraform file (`artifact-v<version>.tf`) into an existing SC product directory that adds a new `aws_servicecatalog_provisioning_artifact` with active=true and guidance=DEFAULT, plus a `null_resource` that automatically deprecates the previous DEFAULT artifact via `aws servicecatalog update-provisioning-artifact`. Uses a region-qualified S3 URL that works in both GovCloud and commercial. Use this for the day-to-day 'I changed the form, ship a new version' flow.",
         "inputSchema": {
           "type": "object",
-          "required": ["productResourceName", "newVersion", "templateBucket", "templateKey", "directory"],
+          "required": [
+            "productResourceName",
+            "newVersion",
+            "templateBucket",
+            "templateKey",
+            "directory"
+          ],
           "properties": {
-            "productResourceName": { "type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$", "description": "Terraform resource name (e.g. `this`) of the existing aws_servicecatalog_product." },
-            "newVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-            "templateBucket": { "type": "string", "pattern": "^[a-z0-9.-]{3,63}$" },
-            "templateKey": { "type": "string", "minLength": 1, "description": "S3 key to the new template artifact." },
-            "description": { "type": "string" },
-            "directory": { "type": "string", "minLength": 1, "description": "Workspace-relative dir containing the existing product.tf." }
+            "productResourceName": {
+              "type": "string",
+              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+              "description": "Terraform resource name (e.g. `this`) of the existing aws_servicecatalog_product."
+            },
+            "newVersion": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "templateBucket": {
+              "type": "string",
+              "pattern": "^[a-z0-9.-]{3,63}$"
+            },
+            "templateKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "S3 key to the new template artifact."
+            },
+            "description": {
+              "type": "string"
+            },
+            "directory": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Workspace-relative dir containing the existing product.tf."
+            }
           }
         }
       },
@@ -913,10 +1204,19 @@
         "modelDescription": "Validates a sample SC form inputs object against a JSON schema (the same shape the SC dispatcher Lambda receives). Pure local validation — no AWS calls. Catches missing required fields, enum mismatches, regex failures, length/range violations. Use this to verify a form change before users encounter it in the SC console.",
         "inputSchema": {
           "type": "object",
-          "required": ["schema", "sample"],
+          "required": [
+            "schema",
+            "sample"
+          ],
           "properties": {
-            "schema": { "type": "object", "description": "JSON schema describing the SC form's input parameters." },
-            "sample": { "type": "object", "description": "Sample inputs to validate." }
+            "schema": {
+              "type": "object",
+              "description": "JSON schema describing the SC form's input parameters."
+            },
+            "sample": {
+              "type": "object",
+              "description": "Sample inputs to validate."
+            }
           }
         }
       },
@@ -926,13 +1226,37 @@
         "modelDescription": "Layers a Python developer environment onto an existing infra/lambda-image-<fn>/ directory: pyproject.toml (pinned to the base-image Python version with pytest+ruff+mypy+moto+pip-tools dev deps), Makefile (install/test/lint/typecheck/freeze), .python-version, .devcontainer/devcontainer.json (no Docker — Codespaces-friendly), .vscode/launch.json (Local invoke + pytest debug configs), tests/conftest.py with a lambda_context fixture, tests/test_handler.py smoke test, tests/events/sample.json, and scripts/local_invoke.py (stdlib-only driver). Existing files are skipped, never overwritten. Fully Docker-free.",
         "inputSchema": {
           "type": "object",
-          "required": ["directory", "functionName", "pythonVersion", "handler"],
+          "required": [
+            "directory",
+            "functionName",
+            "pythonVersion",
+            "handler"
+          ],
           "properties": {
-            "directory": { "type": "string", "minLength": 1, "description": "Workspace-relative path to the lambda image dir." },
-            "functionName": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
-            "pythonVersion": { "type": "string", "pattern": "^3\\.\\d+$", "description": "Python version, e.g. \"3.12\"." },
-            "handler": { "type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)+$", "description": "Dotted handler path." },
-            "region": { "type": "string", "pattern": "^[a-z]{2}-[a-z]+-\\d+$", "description": "Optional AWS region — baked into the devcontainer post-create env." }
+            "directory": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Workspace-relative path to the lambda image dir."
+            },
+            "functionName": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "pythonVersion": {
+              "type": "string",
+              "pattern": "^3\\.\\d+$",
+              "description": "Python version, e.g. \"3.12\"."
+            },
+            "handler": {
+              "type": "string",
+              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)+$",
+              "description": "Dotted handler path."
+            },
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z]{2}-[a-z]+-\\d+$",
+              "description": "Optional AWS region — baked into the devcontainer post-create env."
+            }
           }
         }
       },
@@ -942,13 +1266,35 @@
         "modelDescription": "Runs a Lambda handler in a plain Python interpreter against a JSON event file. Resolves the interpreter from python.defaultInterpreterPath, then <project>/.venv/bin/python, then python3 on PATH. Streams stdout/stderr into the output channel and returns the exit code. Catches handler logic + missing-dep bugs but does NOT exercise the AL2 Lambda runtime (use Lambda: Build & Publish Image for that). Requires that scripts/local_invoke.py was scaffolded by terraform_scaffold_python_dev_env.",
         "inputSchema": {
           "type": "object",
-          "required": ["directory", "functionName", "handler", "eventPath"],
+          "required": [
+            "directory",
+            "functionName",
+            "handler",
+            "eventPath"
+          ],
           "properties": {
-            "directory": { "type": "string", "minLength": 1, "description": "Workspace-relative path to the lambda image dir." },
-            "functionName": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
-            "handler": { "type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)+$" },
-            "eventPath": { "type": "string", "minLength": 1, "description": "Path to the event JSON, workspace-relative or absolute." },
-            "pythonPath": { "type": "string", "description": "Optional explicit interpreter override." }
+            "directory": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Workspace-relative path to the lambda image dir."
+            },
+            "functionName": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "handler": {
+              "type": "string",
+              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)+$"
+            },
+            "eventPath": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path to the event JSON, workspace-relative or absolute."
+            },
+            "pythonPath": {
+              "type": "string",
+              "description": "Optional explicit interpreter override."
+            }
           }
         }
       },
@@ -958,12 +1304,29 @@
         "modelDescription": "Streams /aws/lambda/<functionName> via `aws logs tail --follow` into the output channel. Cancellation kills the child process. Useful right after a deploy to watch the next invocation. Requires the AWS CLI on PATH and credentials available (env, profile, awscreds, etc.).",
         "inputSchema": {
           "type": "object",
-          "required": ["region", "functionName"],
+          "required": [
+            "region",
+            "functionName"
+          ],
           "properties": {
-            "region": { "type": "string", "pattern": "^[a-z]{2}-[a-z]+-\\d+$" },
-            "functionName": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
-            "filterPattern": { "type": "string", "description": "Optional CloudWatch filter pattern." },
-            "sinceMinutes": { "type": "integer", "minimum": 1, "maximum": 1440, "description": "Look-back window in minutes (default 5)." }
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z]{2}-[a-z]+-\\d+$"
+            },
+            "functionName": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "filterPattern": {
+              "type": "string",
+              "description": "Optional CloudWatch filter pattern."
+            },
+            "sinceMinutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1440,
+              "description": "Look-back window in minutes (default 5)."
+            }
           }
         }
       }
@@ -1065,7 +1428,7 @@
       },
       {
         "command": "terraform.requiredSetup.setAll",
-        "title": "Set All Required Variables & Secrets\u2026",
+        "title": "Set All Required Variables & Secrets…",
         "icon": "$(checklist)",
         "category": "Terraform"
       },
@@ -1077,12 +1440,12 @@
       },
       {
         "command": "terraform.requiredSetup.set",
-        "title": "Set Required Value\u2026",
+        "title": "Set Required Value…",
         "category": "Terraform"
       },
       {
         "command": "terraform.pinTerraformVersion",
-        "title": "Pin Terraform Version\u2026 (.terraform-version)",
+        "title": "Pin Terraform Version… (.terraform-version)",
         "icon": "$(versions)",
         "category": "Terraform"
       },
@@ -1094,67 +1457,67 @@
       },
       {
         "command": "terraform.scaffoldCodebuildExecutor",
-        "title": "Scaffold Executor Project\u2026",
+        "title": "Scaffold Executor Project…",
         "icon": "$(server-process)",
         "category": "CodeBuild"
       },
       {
         "command": "terraform.runPlanInCodeBuild",
-        "title": "Run Terraform Plan\u2026",
+        "title": "Run Terraform Plan…",
         "icon": "$(cloud-upload)",
         "category": "CodeBuild"
       },
       {
         "command": "terraform.runApplyInCodeBuild",
-        "title": "Run Terraform Apply\u2026",
+        "title": "Run Terraform Apply…",
         "icon": "$(cloud-upload)",
         "category": "CodeBuild"
       },
       {
         "command": "terraform.scaffoldLambdaImage",
-        "title": "Scaffold Container Image Project\u2026",
+        "title": "Scaffold Container Image Project…",
         "icon": "$(symbol-method)",
         "category": "Lambda"
       },
       {
         "command": "terraform.buildLambdaImage",
-        "title": "Build & Publish Image\u2026",
+        "title": "Build & Publish Image…",
         "icon": "$(cloud-upload)",
         "category": "Lambda"
       },
       {
         "command": "terraform.scaffoldServiceCatalogProduct",
-        "title": "Scaffold Product\u2026",
+        "title": "Scaffold Product…",
         "icon": "$(package)",
         "category": "Service Catalog"
       },
       {
         "command": "terraform.bumpServiceCatalogArtifact",
-        "title": "Bump Provisioning Artifact\u2026",
+        "title": "Bump Provisioning Artifact…",
         "icon": "$(versions)",
         "category": "Service Catalog"
       },
       {
         "command": "terraform.dryRenderServiceCatalogProduct",
-        "title": "Dry-render Product Form Inputs\u2026",
+        "title": "Dry-render Product Form Inputs…",
         "icon": "$(beaker)",
         "category": "Service Catalog"
       },
       {
         "command": "terraform.scaffoldPythonDevEnv",
-        "title": "Scaffold Python Dev Environment\u2026",
+        "title": "Scaffold Python Dev Environment…",
         "icon": "$(snake)",
         "category": "Lambda"
       },
       {
         "command": "terraform.invokeLambdaLocally",
-        "title": "Test Locally\u2026",
+        "title": "Test Locally…",
         "icon": "$(play)",
         "category": "Lambda"
       },
       {
         "command": "terraform.tailLambdaLogs",
-        "title": "Tail Function Logs\u2026",
+        "title": "Tail Function Logs…",
         "icon": "$(output)",
         "category": "Lambda"
       },
@@ -1388,7 +1751,9 @@
         },
         "terraformWorkspace.agent.owners": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "GitHub orgs/users whose issue queues the agent should scan."
         },
@@ -1422,7 +1787,11 @@
         },
         "terraformWorkspace.agent.autonomyLevel": {
           "type": "string",
-          "enum": ["observe", "draft-pr", "merge"],
+          "enum": [
+            "observe",
+            "draft-pr",
+            "merge"
+          ],
           "default": "draft-pr",
           "description": "How autonomously the agent acts. `observe` only records findings; `draft-pr` opens PRs for review; `merge` merges when confident."
         },
@@ -1433,8 +1802,13 @@
         },
         "terraformWorkspace.agent.learner.owners": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["HappyPathway", "djaboxx"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "HappyPathway",
+            "djaboxx"
+          ],
           "description": "GitHub orgs/users to scan for learning-tagged repos."
         },
         "terraformWorkspace.agent.learner.topic": {
@@ -1461,7 +1835,11 @@
         },
         "terraformWorkspace.auth.preferredAuthMethod": {
           "type": "string",
-          "enum": ["oidc", "github-app", "personal-access-token"],
+          "enum": [
+            "oidc",
+            "github-app",
+            "personal-access-token"
+          ],
           "default": "oidc",
           "description": "Preferred authentication method when OIDC is unavailable. Only used for guidance; the extension does not auto-configure provider-specific infra."
         },
@@ -1619,7 +1997,9 @@
     "test:watch": "vitest",
     "test:vscode": "tsc -p test/vscode/tsconfig.json && node out/test-vscode/runTest.js",
     "coverage": "vitest run --coverage",
-    "package": "vsce package",
+    "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "install-latest": "bash scripts/install-latest.sh",
+    "install-pre": "bash scripts/install-latest.sh --pre",
     "clean": "node -e \"const fs=require('fs');for(const p of ['dist','coverage','.vitest-cache']){try{fs.rmSync(p,{recursive:true,force:true})}catch{}};for(const f of fs.readdirSync('.')){if(f.endsWith('.vsix'))fs.rmSync(f)}\""
   },
   "devDependencies": {

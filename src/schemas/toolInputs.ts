@@ -432,6 +432,13 @@ export interface ScaffoldLambdaImageInput {
   timeout?: number;
   envVars?: Record<string, string>;
   extraManagedPolicyArns?: string[];
+  // VPC support
+  subnetNameTag?: string;
+  securityGroupName?: string;
+  // CodeBuild integration
+  codebuildProjectName?: string;
+  codebuildRoleName?: string;
+  githubTokenSecretName?: string;
 }
 
 export const ScaffoldLambdaImageInputSchema = defineSchema<ScaffoldLambdaImageInput>({
@@ -439,7 +446,7 @@ export const ScaffoldLambdaImageInputSchema = defineSchema<ScaffoldLambdaImageIn
   required: ['functionName', 'region', 'packerSourceBucket', 'packerCodebuildProject'],
   properties: {
     functionName: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
-    region: { type: 'string', pattern: '^[a-z]{2}-[a-z]+-\\d+$' },
+    region: { type: 'string', pattern: '^[a-z]{2}(-gov)?-[a-z]+-\\d+$' },
     packerSourceBucket: { type: 'string', pattern: '^[a-z0-9.-]{3,63}$' },
     packerCodebuildProject: { type: 'string', minLength: 2, maxLength: 150 },
     baseImage: { type: 'string', minLength: 1 },
@@ -447,7 +454,12 @@ export const ScaffoldLambdaImageInputSchema = defineSchema<ScaffoldLambdaImageIn
     memorySize: { type: 'number', minimum: 128, maximum: 10240 },
     timeout: { type: 'number', minimum: 1, maximum: 900 },
     envVars: { type: 'object', additionalProperties: { type: 'string' } },
-    extraManagedPolicyArns: { type: 'array', items: { type: 'string', pattern: '^arn:aws[a-z-]*:iam::' } },
+    extraManagedPolicyArns: { type: 'array', items: { type: 'string' } },
+    subnetNameTag: { type: 'string', minLength: 1 },
+    securityGroupName: { type: 'string', minLength: 1 },
+    codebuildProjectName: { type: 'string', minLength: 2, maxLength: 150 },
+    codebuildRoleName: { type: 'string', minLength: 1 },
+    githubTokenSecretName: { type: 'string', minLength: 1 },
   },
   additionalProperties: false,
 });
@@ -481,34 +493,38 @@ export const BuildLambdaImageInputSchema = defineSchema<BuildLambdaImageInput>({
 // ── Service Catalog (L3 + L4) ────────────────────────────────────────────────
 
 export interface ScaffoldScProductInput {
-  productName: string;
-  portfolioId: string;
+  /** Short slug used for resource names and the auto-created S3 bucket. */
+  productSlug: string;
+  portfolioName: string;
+  portfolioDescription?: string;
   owner: string;
-  supportEmail: string;
-  templateBucket: string;
   templateKey: string;
-  launchRoleName: string;
   region: string;
   description?: string;
-  distributor?: string;
   initialVersion?: string;
+  /** Full Lambda ARN for the launch role's InvokeFunction policy statement. */
+  lambdaArn?: string;
+  /** IAM principal ARNs (or IAM_PATTERN globs) granted portfolio access. */
+  principalArns?: string[];
+  /** When set, uses an existing launch role by this name instead of creating one. */
+  existingLaunchRoleName?: string;
 }
 
 export const ScaffoldScProductInputSchema = defineSchema<ScaffoldScProductInput>({
   type: 'object',
-  required: ['productName', 'portfolioId', 'owner', 'supportEmail', 'templateBucket', 'templateKey', 'launchRoleName', 'region'],
+  required: ['productSlug', 'portfolioName', 'owner', 'templateKey', 'region'],
   properties: {
-    productName: { type: 'string', minLength: 1, maxLength: 100 },
-    portfolioId: { type: 'string', pattern: '^port-[a-z0-9]+$' },
+    productSlug: { type: 'string', pattern: '^[a-z0-9-]{1,60}$' },
+    portfolioName: { type: 'string', minLength: 1 },
+    portfolioDescription: { type: 'string' },
     owner: { type: 'string', minLength: 1 },
-    supportEmail: { type: 'string', pattern: '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$' },
-    templateBucket: { type: 'string', pattern: '^[a-z0-9.-]{3,63}$' },
     templateKey: { type: 'string', minLength: 1 },
-    launchRoleName: { type: 'string', minLength: 1, maxLength: 64 },
-    region: { type: 'string', pattern: '^[a-z]{2}-[a-z]+-\\d+$' },
+    region: { type: 'string', pattern: '^[a-z]{2}(-gov)?-[a-z]+-\\d+$' },
     description: { type: 'string' },
-    distributor: { type: 'string' },
     initialVersion: { type: 'string', pattern: '^\\d+\\.\\d+\\.\\d+$' },
+    lambdaArn: { type: 'string' },
+    principalArns: { type: 'array', items: { type: 'string' } },
+    existingLaunchRoleName: { type: 'string' },
   },
   additionalProperties: false,
 });
