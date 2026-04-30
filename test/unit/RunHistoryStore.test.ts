@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RunHistoryStore } from '../../src/cache/RunHistoryStore.js';
-import Database from 'better-sqlite3';
 import type { TfRun } from '../../src/types/index.js';
 
 function tmpDir(): string {
@@ -27,18 +26,13 @@ function makeRun(id: number, repoSlug = 'acme/platform'): TfRun {
   };
 }
 
-describe('RunHistoryStore migrations', () => {
-  it('initializes user_version to the migration count on a fresh DB', () => {
+describe('RunHistoryStore', () => {
+  it('initializes cleanly on a fresh directory', () => {
     const dir = tmpDir();
     try {
       const store = new RunHistoryStore(dir);
-      // We don't expose user_version through the API, but we can verify by
-      // re-opening the same file directly and reading the pragma.
+      expect(store.listAll()).toEqual([]);
       store.dispose();
-      const raw = new Database(join(dir, 'run_history.db'));
-      const v = raw.pragma('user_version', { simple: true }) as number;
-      expect(v).toBeGreaterThan(0);
-      raw.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -59,38 +53,80 @@ describe('RunHistoryStore migrations', () => {
     }
   });
 
-  it('rebuilds gracefully when the existing DB is corrupt', () => {
+  it('persists across instances', () => {
     const dir = tmpDir();
     try {
-      // Pre-create a "DB" with an incompatible schema so the migration ladder
-      // throws and falls into the rebuild path.
-      const dbPath = join(dir, 'run_history.db');
-      const raw = new Database(dbPath);
-      raw.exec('CREATE TABLE runs (totally_wrong_column INTEGER)');
-      raw.pragma('user_version = 99'); // ahead of any real migration
-      raw.close();
+      const s1 = new RunHistoryStore(dir);
+      s1.upsert(makeRun(42));
+      s1.dispose();
 
-      // Re-opening should not throw, and the table should be reinitialized
-      // so a normal upsert works.
+      const s2 = new RunHistoryStore(dir);
+      const rows = s2.list('acme/platform');
+      expect(rows.length).toBe(1);
+      expect(rows[0].id).toBe(42);
+      s2.dispose();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers gracefully when the JSON file is corrupt', () => {
+    const dir = tmpDir();
+    try {
+      // Write invalid JSON to simulate corruption
+      writeFileSync(join(dir, 'run_history.json'), 'not-json!!', 'utf8');
+
+      // Constructor should not throw — falls back to empty state
       const store = new RunHistoryStore(dir);
-      // Either the migrations short-circuited (user_version >= ours) and the
-      // bad table survived → upsert throws here; OR the rebuild path ran and
-      // upsert succeeds. Verify by attempting one:
-      let rebuilt = true;
-      try {
-        store.upsert(makeRun(7));
-      } catch {
-        rebuilt = false;
-      }
-      // Either way the file must exist and the constructor must not have thrown.
-      expect(existsSync(dbPath)).toBe(true);
-      // We need at least one of these guarantees: the user_version > ours
-      // path is only safe if upsert still works (it won't, since the schema
-      // is wrong). So enforce that we either rebuilt OR the schema happened
-      // to be compatible. In practice for user_version=99 the constructor
-      // will see "ahead" and skip; but our INSERT statement will then fail.
-      // Treat upsert success as a stronger guarantee.
-      expect(rebuilt).toBe(true);
+      expect(store.listAll()).toEqual([]);
+
+      // Normal upsert should work after recovery
+      store.upsert(makeRun(7));
+      expect(store.list('acme/platform').length).toBe(1);
+      store.dispose();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('filters list() by repoSlug', () => {
+    const dir = tmpDir();
+    try {
+      const store = new RunHistoryStore(dir);
+      store.upsert(makeRun(1, 'acme/platform'));
+      store.upsert(makeRun(2, 'acme/other'));
+      store.upsert(makeRun(3, 'acme/platform'));
+      expect(store.list('acme/platform').length).toBe(2);
+      expect(store.list('acme/other').length).toBe(1);
+      expect(store.listAll().length).toBe(3);
+      store.dispose();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upsert merges updates into existing runs', () => {
+    const dir = tmpDir();
+    try {
+      const store = new RunHistoryStore(dir);
+      store.upsert(makeRun(1));
+      store.upsert({ ...makeRun(1), status: 'in_progress' as TfRun['status'], conclusion: 'failure' as TfRun['conclusion'] });
+      const rows = store.list('acme/platform');
+      expect(rows.length).toBe(1);
+      expect(rows[0].conclusion).toBe('failure');
+      store.dispose();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('existsSync check — json file is created on first upsert', () => {
+    const dir = tmpDir();
+    const jsonPath = join(dir, 'run_history.json');
+    try {
+      const store = new RunHistoryStore(dir);
+      store.upsert(makeRun(1));
+      expect(existsSync(jsonPath)).toBe(true);
       store.dispose();
     } finally {
       rmSync(dir, { recursive: true, force: true });
