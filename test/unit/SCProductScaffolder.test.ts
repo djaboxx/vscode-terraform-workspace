@@ -8,34 +8,47 @@ import {
 } from '../../src/servicecatalog/SCProductScaffolder.js';
 
 const productInputs = {
-  productName: 'New Repo Factory',
-  portfolioId: 'port-abc123',
+  productSlug: 'new-repo',
+  portfolioName: 'New Repo Factory',
   owner: 'Platform Team',
   supportEmail: 'platform@example.com',
-  templateBucket: 'sc-templates',
   templateKey: 'new-repo/v1.yaml',
-  launchRoleName: 'SCLaunchRole',
   region: 'us-east-1',
 };
 
 describe('SCProductScaffolder', () => {
-  it('emits product + portfolio assoc + launch constraint', () => {
+  it('emits product + portfolio assoc + launch role + dummy/real artifacts', () => {
     const out = scProductTf(productInputs);
     expect(out).toContain('aws_servicecatalog_product');
-    expect(out).toContain('"port-abc123"');
+    expect(out).toContain('aws_servicecatalog_portfolio');
     expect(out).toContain('aws_servicecatalog_product_portfolio_association');
-    expect(out).toContain('aws_servicecatalog_constraint');
-    expect(out).toContain('SCLaunchRole');
-    expect(out).toContain('https://s3.amazonaws.com/sc-templates/new-repo/v1.yaml');
-    expect(out).toContain('name         = "v1.0.0"');
+    // Launch role created (no existingLaunchRoleName provided).
+    expect(out).toContain('resource "aws_iam_role" "sc_launch"');
+    expect(out).toContain('"new_repo-sc-launch-role"');
+    // S3 bucket for the CFN template artifact.
+    expect(out).toContain('resource "aws_s3_bucket" "sc_templates"');
+    // Region-qualified template URL using the per-product bucket name.
+    expect(out).toContain('-new_repo-sc-templates.s3.${data.aws_region.current.name}.amazonaws.com/new-repo/v1.yaml');
+    // Initial provisioning artifact name (no "v" prefix in the human-readable name).
+    expect(out).toContain('name         = "1.0.0"');
+    // Resource address has the sanitized "v" prefix.
+    expect(out).toContain('aws_servicecatalog_provisioning_artifact" "v1_0_0"');
   });
 
   it('respects custom initialVersion', () => {
     const out = scProductTf({ ...productInputs, initialVersion: '2.3.0' });
-    expect(out).toContain('"v2.3.0"');
+    expect(out).toContain('name         = "2.3.0"');
+    expect(out).toContain('aws_servicecatalog_provisioning_artifact" "v2_3_0"');
   });
 
-  it('artifact bump emits a versioned resource block', () => {
+  it('uses an existing launch role when provided', () => {
+    const out = scProductTf({ ...productInputs, existingLaunchRoleName: 'PreBakedRole' });
+    expect(out).toContain('data "aws_iam_role" "sc_launch"');
+    expect(out).toContain('name = "PreBakedRole"');
+    expect(out).not.toContain('resource "aws_iam_role" "sc_launch"');
+  });
+
+  it('artifact bump emits a versioned resource block + deprecation provisioner', () => {
     const out = scArtifactBumpTf({
       productResourceName: 'this',
       newVersion: '1.2.0',
@@ -44,8 +57,11 @@ describe('SCProductScaffolder', () => {
     });
     expect(out).toContain('resource "aws_servicecatalog_provisioning_artifact" "v_1_2_0"');
     expect(out).toContain('product_id   = aws_servicecatalog_product.this.id');
-    expect(out).toContain('"v1.2.0"');
+    expect(out).toContain('name         = "1.2.0"');
     expect(out).toContain('new-repo/v1.2.0.yaml');
+    // Deprecation null_resource is emitted alongside the new artifact.
+    expect(out).toContain('null_resource" "deprecate_previous_artifact_1_2_0"');
+    expect(out).toContain('aws servicecatalog update-provisioning-artifact');
   });
 });
 

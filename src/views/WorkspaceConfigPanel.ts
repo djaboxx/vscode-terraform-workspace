@@ -1,15 +1,21 @@
 import * as vscode from 'vscode';
 import {
   WorkspaceConfig,
+  WorkspaceConfigEnv,
 } from '../types/index.js';
 import { WorkspaceConfigManager } from '../config/WorkspaceConfigManager.js';
+import { GithubEnvironmentsClient } from '../github/GithubEnvironmentsClient.js';
+import { GithubOrgsClient } from '../github/GithubOrgsClient.js';
 
 type PanelMessage =
   | { type: 'save'; config: WorkspaceConfig }
+  | { type: 'saveAndPush'; config: WorkspaceConfig }
   | { type: 'addEnvironment' }
   | { type: 'removeEnvironment'; index: number }
   | { type: 'openRaw' }
   | { type: 'ready' };
+
+type PushStep = { label: string; status: 'ok' | 'error' | 'skipped'; detail?: string };
 
 /**
  * WebView panel that replaces the need for a Terraform workspace to configure
@@ -29,7 +35,9 @@ export class WorkspaceConfigPanel {
   private constructor(
     private readonly folder: vscode.WorkspaceFolder,
     private readonly manager: WorkspaceConfigManager,
-    config: WorkspaceConfig
+    config: WorkspaceConfig,
+    private readonly envsClient?: GithubEnvironmentsClient,
+    private readonly orgsClient?: GithubOrgsClient,
   ) {
     this.config = config;
 
@@ -70,7 +78,9 @@ export class WorkspaceConfigPanel {
   static async open(
     folder: vscode.WorkspaceFolder,
     manager: WorkspaceConfigManager,
-    _context: vscode.ExtensionContext
+    _context: vscode.ExtensionContext,
+    envsClient?: GithubEnvironmentsClient,
+    orgsClient?: GithubOrgsClient,
   ): Promise<WorkspaceConfigPanel> {
     const key = folder.uri.toString();
     const existing = WorkspaceConfigPanel.instances.get(key);
@@ -91,7 +101,7 @@ export class WorkspaceConfigPanel {
       );
     }
 
-    const instance = new WorkspaceConfigPanel(folder, manager, config);
+    const instance = new WorkspaceConfigPanel(folder, manager, config, envsClient, orgsClient);
     WorkspaceConfigPanel.instances.set(key, instance);
     return instance;
   }
@@ -111,9 +121,160 @@ export class WorkspaceConfigPanel {
         );
         break;
 
+      case 'saveAndPush':
+        this.config = msg.config;
+        await this.manager.write(this.folder, this.config);
+        await this.pushToGithub();
+        break;
+
       case 'openRaw':
         await this.manager.openInEditor(this.folder);
         break;
+    }
+  }
+
+  /**
+   * Pushes the saved config to GitHub: repo metadata, repo vars/secrets,
+   * environment metadata (wait_timer/reviewers/branch policy), and per-env
+   * vars/secrets. Reports per-step status back to the webview.
+   */
+  private async pushToGithub(): Promise<void> {
+    const steps: PushStep[] = [];
+    const post = (s: PushStep) => {
+      steps.push(s);
+      this.panel.webview.postMessage({ type: 'pushStep', step: s });
+    };
+
+    if (!this.envsClient) {
+      post({ label: 'GitHub clients not wired', status: 'error', detail: 'Reopen the panel.' });
+      return;
+    }
+    const owner = this.config.repo?.repoOrg;
+    const repo = this.config.repo?.name;
+    if (!owner || !repo) {
+      post({ label: 'Missing repo / repoOrg', status: 'error', detail: 'Set them in the Repository section first.' });
+      return;
+    }
+
+    this.panel.webview.postMessage({ type: 'pushStart' });
+
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Pushing ${owner}/${repo} to GitHub`, cancellable: false },
+      async progress => {
+        // 1. Repo metadata (description / private / topics)
+        try {
+          progress.report({ message: 'Repo metadata' });
+          await this.envsClient!.updateRepoMetadata(owner, repo, {
+            description: this.config.repo.description,
+            isPrivate: this.config.repo.isPrivate,
+            topics: this.config.repo.repoTopics,
+          });
+          post({ label: `Repo metadata (${owner}/${repo})`, status: 'ok' });
+        } catch (err) {
+          post({ label: 'Repo metadata', status: 'error', detail: String(err) });
+        }
+
+        // 2. Repo-level variables
+        for (const v of this.config.repo.vars ?? []) {
+          if (!v.name) continue;
+          try {
+            await this.envsClient!.setRepoVariable(owner, repo, v.name, v.value ?? '');
+            post({ label: `Repo var ${v.name}`, status: 'ok' });
+          } catch (err) {
+            post({ label: `Repo var ${v.name}`, status: 'error', detail: String(err) });
+          }
+        }
+
+        // 3. Repo-level secrets (skip blanks — value is write-only and may not be re-entered)
+        for (const s of this.config.repo.secrets ?? []) {
+          if (!s.name) continue;
+          if (!s.value) {
+            post({ label: `Repo secret ${s.name}`, status: 'skipped', detail: 'no value entered' });
+            continue;
+          }
+          try {
+            await this.envsClient!.setRepoSecret(owner, repo, s.name, s.value);
+            post({ label: `Repo secret ${s.name}`, status: 'ok' });
+          } catch (err) {
+            post({ label: `Repo secret ${s.name}`, status: 'error', detail: String(err) });
+          }
+        }
+
+        // 4. Per-environment upsert + vars/secrets
+        for (const env of this.config.environments ?? []) {
+          if (!env.name) continue;
+          await this.pushEnvironment(owner, repo, env, post, progress);
+        }
+      },
+    );
+
+    const errors = steps.filter(s => s.status === 'error').length;
+    const oks = steps.filter(s => s.status === 'ok').length;
+    if (errors === 0) {
+      vscode.window.showInformationMessage(`Pushed ${oks} change(s) to GitHub.`);
+    } else {
+      vscode.window.showWarningMessage(`Pushed ${oks} change(s); ${errors} failed. See panel for details.`);
+    }
+    this.panel.webview.postMessage({ type: 'pushDone', errors, oks });
+  }
+
+  private async pushEnvironment(
+    owner: string,
+    repo: string,
+    env: WorkspaceConfigEnv,
+    post: (s: PushStep) => void,
+    progress: vscode.Progress<{ message?: string }>,
+  ): Promise<void> {
+    progress.report({ message: `Environment ${env.name}` });
+    // 4a. Upsert env metadata
+    try {
+      const userIds = env.reviewers?.users?.length
+        ? await this.envsClient!.resolveUserIds(env.reviewers.users)
+        : [];
+      const teamIds = env.reviewers?.teams?.length
+        ? await this.envsClient!.resolveTeamIds(owner, env.reviewers.teams)
+        : [];
+      const bp = env.deploymentBranchPolicy;
+      await this.envsClient!.upsertEnvironment(owner, repo, env.name, {
+        waitTimer: env.waitTimer,
+        preventSelfReview: env.preventSelfReview,
+        reviewerUserIds: userIds,
+        reviewerTeamIds: teamIds,
+        deploymentBranchPolicy: bp
+          ? { protected_branches: bp.protectedBranches !== false, custom_branch_policies: false }
+          : undefined,
+      });
+      post({ label: `Env ${env.name} (metadata)`, status: 'ok' });
+    } catch (err) {
+      post({ label: `Env ${env.name} (metadata)`, status: 'error', detail: String(err) });
+      // If the environment doesn't exist, vars/secrets calls below will all 404.
+      return;
+    }
+
+    // 4b. Env-level variables
+    for (const v of env.vars ?? []) {
+      if (!v.name) continue;
+      try {
+        await this.envsClient!.setEnvironmentVariable(owner, repo, env.name, v.name, v.value ?? '');
+        post({ label: `Env ${env.name} var ${v.name}`, status: 'ok' });
+      } catch (err) {
+        post({ label: `Env ${env.name} var ${v.name}`, status: 'error', detail: String(err) });
+      }
+    }
+
+    // 4c. Env-level secrets
+    for (const s of env.secrets ?? []) {
+      if (!s.name) continue;
+      if (!s.value) {
+        post({ label: `Env ${env.name} secret ${s.name}`, status: 'skipped', detail: 'no value entered' });
+        continue;
+      }
+      try {
+        await this.envsClient!.setEnvironmentSecret(owner, repo, env.name, s.name, s.value);
+        post({ label: `Env ${env.name} secret ${s.name}`, status: 'ok' });
+      } catch (err) {
+        post({ label: `Env ${env.name} secret ${s.name}`, status: 'error', detail: String(err) });
+      }
     }
   }
 
@@ -337,8 +498,10 @@ export class WorkspaceConfigPanel {
 <div class="toolbar">
   <h2 id="panelTitle">Terraform Workspace Configuration</h2>
   <button class="secondary" id="btnOpenRaw">Open JSON</button>
-  <button id="btnSave">Save</button>
+  <button class="secondary" id="btnSave">Save</button>
+  <button id="btnSavePush" title="Save locally and push repo metadata, environments, vars and secrets to GitHub">Save &amp; Push to GitHub</button>
 </div>
+<div id="pushStatus" style="display:none;padding:8px 20px;border-bottom:1px solid var(--border);background:var(--section-bg);max-height:200px;overflow:auto;font-family:var(--vscode-editor-font-family,monospace);font-size:12px"></div>
 <div class="content" id="content">
   <p style="color: var(--vscode-descriptionForeground)">Loading...</p>
 </div>
@@ -348,11 +511,27 @@ export class WorkspaceConfigPanel {
   let state = null;
 
   // ── Messaging ─────────────────────────────────────────────────────────────
+  const pushStatusEl = document.getElementById('pushStatus');
   window.addEventListener('message', e => {
     const msg = e.data;
     if (msg.type === 'load') {
       state = msg.config;
       render();
+    } else if (msg.type === 'pushStart') {
+      pushStatusEl.style.display = 'block';
+      pushStatusEl.innerHTML = '<div><strong>Pushing to GitHub…</strong></div>';
+    } else if (msg.type === 'pushStep') {
+      const colors = { ok: '#3fb950', error: '#f85149', skipped: '#888' };
+      const icons = { ok: '✓', error: '✗', skipped: '·' };
+      const c = colors[msg.step.status] || '#888';
+      const i = icons[msg.step.status] || '?';
+      const detail = msg.step.detail ? ' — ' + esc(msg.step.detail) : '';
+      pushStatusEl.insertAdjacentHTML('beforeend',
+        '<div style="color:'+c+'">'+i+' '+esc(msg.step.label)+detail+'</div>');
+      pushStatusEl.scrollTop = pushStatusEl.scrollHeight;
+    } else if (msg.type === 'pushDone') {
+      pushStatusEl.insertAdjacentHTML('beforeend',
+        '<div style="margin-top:6px"><strong>Done.</strong> '+msg.oks+' ok, '+msg.errors+' error(s).</div>');
     }
   });
 
@@ -360,6 +539,13 @@ export class WorkspaceConfigPanel {
     if (!state) return;
     collectForm();
     vscode.postMessage({ type: 'save', config: state });
+  });
+  document.getElementById('btnSavePush').addEventListener('click', () => {
+    if (!state) return;
+    collectForm();
+    pushStatusEl.style.display = 'none';
+    pushStatusEl.innerHTML = '';
+    vscode.postMessage({ type: 'saveAndPush', config: state });
   });
   document.getElementById('btnOpenRaw').addEventListener('click', () => {
     vscode.postMessage({ type: 'openRaw' });

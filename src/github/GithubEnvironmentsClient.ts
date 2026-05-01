@@ -526,6 +526,130 @@ export class GithubEnvironmentsClient {
     );
   }
 
+  // ─── Environment metadata (PUT-style upsert) ──────────────────────────────
+
+  /**
+   * Creates or updates a GitHub Environment with protection rules.
+   * Uses `PUT /repos/{owner}/{repo}/environments/{name}` which is upsert-safe.
+   *
+   * `reviewerIds`/`reviewerTeamIds` are numeric IDs (the API does not accept
+   * slugs/usernames); resolve them via `resolveReviewerIds()` first if you only
+   * have names.
+   */
+  async upsertEnvironment(
+    owner: string,
+    repo: string,
+    environment: string,
+    opts: {
+      waitTimer?: number;
+      preventSelfReview?: boolean;
+      reviewerUserIds?: number[];
+      reviewerTeamIds?: number[];
+      deploymentBranchPolicy?: { protected_branches: boolean; custom_branch_policies: boolean } | null;
+    } = {},
+  ): Promise<void> {
+    const token = await this.auth.getToken();
+    if (!token) {
+      throw new Error('GitHub authentication required');
+    }
+    const reviewers: Array<{ type: 'User' | 'Team'; id: number }> = [
+      ...(opts.reviewerUserIds ?? []).map(id => ({ type: 'User' as const, id })),
+      ...(opts.reviewerTeamIds ?? []).map(id => ({ type: 'Team' as const, id })),
+    ];
+    const body: Record<string, unknown> = {};
+    if (opts.waitTimer !== undefined) body.wait_timer = opts.waitTimer;
+    if (opts.preventSelfReview !== undefined) body.prevent_self_review = opts.preventSelfReview;
+    if (reviewers.length > 0) body.reviewers = reviewers;
+    if (opts.deploymentBranchPolicy !== undefined) body.deployment_branch_policy = opts.deploymentBranchPolicy;
+
+    const response = await this.auth.fetch(
+      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments/${encodeURIComponent(environment)}`,
+      { method: 'PUT', headers: this.headers(token), body: JSON.stringify(body) },
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to upsert environment ${environment}: ${await response.text()}`);
+    }
+  }
+
+  /** Resolves a list of GitHub usernames to numeric user IDs. Skips unknown logins. */
+  async resolveUserIds(logins: string[]): Promise<number[]> {
+    const token = await this.auth.getToken(true);
+    if (!token) return [];
+    const ids: number[] = [];
+    for (const login of logins) {
+      const r = await this.auth.fetch(
+        `${this.auth.apiBaseUrl}/users/${encodeURIComponent(login)}`,
+        { headers: this.headers(token) },
+      );
+      if (r.ok) {
+        const u = (await r.json()) as { id: number };
+        ids.push(u.id);
+      }
+    }
+    return ids;
+  }
+
+  /** Resolves `<org>/<team-slug>` (or just `<team-slug>` against `owner`) to numeric team IDs. */
+  async resolveTeamIds(owner: string, teamSlugs: string[]): Promise<number[]> {
+    const token = await this.auth.getToken(true);
+    if (!token) return [];
+    const ids: number[] = [];
+    for (const slug of teamSlugs) {
+      const [org, team] = slug.includes('/') ? slug.split('/', 2) : [owner, slug];
+      const r = await this.auth.fetch(
+        `${this.auth.apiBaseUrl}/orgs/${encodeURIComponent(org)}/teams/${encodeURIComponent(team)}`,
+        { headers: this.headers(token) },
+      );
+      if (r.ok) {
+        const t = (await r.json()) as { id: number };
+        ids.push(t.id);
+      }
+    }
+    return ids;
+  }
+
+  // ─── Repo metadata (PATCH /repos + PUT topics) ────────────────────────────
+
+  /**
+   * Patches repository metadata (description, visibility) and replaces topics.
+   * Only fields that are explicitly provided are sent.
+   */
+  async updateRepoMetadata(
+    owner: string,
+    repo: string,
+    opts: { description?: string; isPrivate?: boolean; topics?: string[] },
+  ): Promise<void> {
+    const token = await this.auth.getToken();
+    if (!token) {
+      throw new Error('GitHub authentication required');
+    }
+    const patch: Record<string, unknown> = {};
+    if (opts.description !== undefined) patch.description = opts.description;
+    if (opts.isPrivate !== undefined) patch.private = opts.isPrivate;
+    if (Object.keys(patch).length > 0) {
+      const r = await this.auth.fetch(
+        `${this.auth.apiBaseUrl}/repos/${owner}/${repo}`,
+        { method: 'PATCH', headers: this.headers(token), body: JSON.stringify(patch) },
+      );
+      if (!r.ok) {
+        throw new Error(`Failed to update repo metadata: ${await r.text()}`);
+      }
+    }
+    if (opts.topics) {
+      const r = await this.auth.fetch(
+        `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/topics`,
+        {
+          method: 'PUT',
+          headers: { ...this.headers(token), Accept: 'application/vnd.github.mercy-preview+json' },
+          body: JSON.stringify({ names: opts.topics }),
+        },
+      );
+      if (!r.ok) {
+        throw new Error(`Failed to update repo topics: ${await r.text()}`);
+      }
+    }
+  }
+
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
   private async getRepoPublicKey(owner: string, repo: string, token: string): Promise<GhaRepoPublicKey> {

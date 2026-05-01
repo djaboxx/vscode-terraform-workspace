@@ -1205,7 +1205,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           return;
         }
       }
-      await WorkspaceConfigPanel.open(folder, configManager, context);
+      await WorkspaceConfigPanel.open(folder, configManager, context, envsClient, orgsClient);
     }),
 
     vscode.commands.registerCommand(
@@ -1230,7 +1230,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const active = await configManager.getActive();
       const folder = active?.folder ?? folders[0];
-      await WorkspaceConfigPanel.open(folder, configManager, context);
+      await WorkspaceConfigPanel.open(folder, configManager, context, envsClient, orgsClient);
     }),
 
     vscode.commands.registerCommand('terraform.discoverDefaults', async () => {
@@ -1776,7 +1776,7 @@ async function runAutoDiscovery(
     ? (mergeConfig(existing as unknown as Record<string, unknown>, suggested as unknown as Record<string, unknown>) as unknown as typeof suggested)
     : suggested);
   await configManager.write(folder, finalConfig);
-  await WorkspaceConfigPanel.open(folder, configManager, context);
+  await WorkspaceConfigPanel.open(folder, configManager, context, services.envsClient, services.orgsClient);
 }
 
 /**

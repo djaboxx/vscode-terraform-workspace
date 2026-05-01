@@ -30,6 +30,11 @@ import {
   ScaffoldPythonDevEnvInputSchema,
   InvokeLambdaLocallyInputSchema,
   TailLambdaLogsInputSchema,
+  RunnerGetStatusInputSchema,
+  RunnerRefreshTokenInputSchema,
+  RunnerForceRedeployInputSchema,
+  RunnerScaleInputSchema,
+  RunnerGetLogsInputSchema,
 } from '../../src/schemas/toolInputs.js';
 import type { CompiledSchema } from '../../src/schemas/defineSchema.js';
 
@@ -70,6 +75,11 @@ const TOOL_SCHEMAS: Record<string, CompiledSchema<unknown>> = {
   terraform_scaffold_python_dev_env: ScaffoldPythonDevEnvInputSchema as CompiledSchema<unknown>,
   terraform_invoke_lambda_locally: InvokeLambdaLocallyInputSchema as CompiledSchema<unknown>,
   terraform_tail_lambda_logs: TailLambdaLogsInputSchema as CompiledSchema<unknown>,
+  ghe_runner_get_status: RunnerGetStatusInputSchema as CompiledSchema<unknown>,
+  ghe_runner_refresh_token: RunnerRefreshTokenInputSchema as CompiledSchema<unknown>,
+  ghe_runner_force_redeploy: RunnerForceRedeployInputSchema as CompiledSchema<unknown>,
+  ghe_runner_scale: RunnerScaleInputSchema as CompiledSchema<unknown>,
+  ghe_runner_get_logs: RunnerGetLogsInputSchema as CompiledSchema<unknown>,
 };
 
 /**

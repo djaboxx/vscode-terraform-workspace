@@ -1,0 +1,96 @@
+name: "Terraform Init"
+description: |
+  Initializes Terraform/OpenTofu against an S3 backend, then uploads the
+  resulting `.terraform/` directory and lockfile to a cache bucket so the
+  follow-up `terraform-plan` / `terraform-apply` steps can re-hydrate state
+  without paying the init cost again.
+
+  Designed to be called after `setup-terraform` (which sets `TF_CLI=tofu` or
+  `terraform`) so the same step works for both CLIs.
+
+inputs:
+  workspace:
+    description: "Terraform workspace name (= GitHub Environment name). Sets TF_WORKSPACE."
+    required: false
+    default: ""
+  working_directory:
+    description: "Path containing the Terraform root module."
+    required: false
+    default: "."
+  backend_bucket:
+    description: "S3 bucket holding tfstate."
+    required: true
+  backend_region:
+    description: "AWS region of the state bucket."
+    required: true
+  backend_dynamodb_table:
+    description: "DynamoDB table for state locking. Optional."
+    required: false
+    default: ""
+  backend_key:
+    description: "Object key under which this workspace's state is stored."
+    required: true
+  cache_bucket:
+    description: "S3 bucket used to share .terraform between plan and apply jobs."
+    required: false
+    default: ""
+  init_args:
+    description: "Extra args passed to `<cli> init`."
+    required: false
+    default: ""
+
+outputs:
+  cache_key:
+    description: "S3 key prefix where .terraform was uploaded — pass to terraform-plan/apply as cache_key."
+    value: ${{ steps.cache.outputs.cache_key }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Resolve CLI"
+      id: cli
+      shell: bash
+      run: echo "cli=${TF_CLI:-tofu}" >> "$GITHUB_OUTPUT"
+
+    - name: "Set TF_WORKSPACE"
+      if: inputs.workspace != ''
+      shell: bash
+      run: echo "TF_WORKSPACE=${{ inputs.workspace }}" >> "$GITHUB_ENV"
+
+    - name: "Terraform Init"
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+        ARGS=(
+          "-input=false"
+          "-upgrade"
+          "-backend-config=bucket=${{ inputs.backend_bucket }}"
+          "-backend-config=region=${{ inputs.backend_region }}"
+          "-backend-config=key=${{ inputs.backend_key }}"
+        )
+        if [ -n "${{ inputs.backend_dynamodb_table }}" ]; then
+          ARGS+=("-backend-config=dynamodb_table=${{ inputs.backend_dynamodb_table }}")
+        fi
+        ${{ steps.cli.outputs.cli }} init ${ARGS[@]} ${{ inputs.init_args }}
+
+    - name: "Compute cache key"
+      id: cache
+      shell: bash
+      run: |
+        WS="${{ inputs.workspace }}"
+        [ -z "$WS" ] && WS="default"
+        KEY="terraform-cache/${{ github.repository }}/${WS}/${{ github.run_id }}-${{ github.run_attempt }}"
+        echo "cache_key=$KEY" >> "$GITHUB_OUTPUT"
+
+    - name: "Upload .terraform to cache bucket"
+      if: inputs.cache_bucket != ''
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+        tar -czf /tmp/terraform-dir.tgz .terraform
+        aws s3 cp /tmp/terraform-dir.tgz "s3://${{ inputs.cache_bucket }}/${{ steps.cache.outputs.cache_key }}/terraform-dir.tgz"
+        if [ -f .terraform.lock.hcl ]; then
+          aws s3 cp .terraform.lock.hcl "s3://${{ inputs.cache_bucket }}/${{ steps.cache.outputs.cache_key }}/terraform.lock.hcl"
+        fi

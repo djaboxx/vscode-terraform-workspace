@@ -1,0 +1,113 @@
+name: "Terraform Plan"
+description: |
+  Runs `tofu plan` (or `terraform plan`) using the .terraform/ cache produced
+  by `terraform-init`. Uploads the resulting plan binary to the cache bucket
+  so `terraform-apply` can apply the exact reviewed plan without drift.
+
+  When run from a `pull_request` event, posts (or updates) a sticky comment
+  with the plan output.
+
+inputs:
+  workspace:
+    description: "Terraform workspace name."
+    required: false
+    default: ""
+  working_directory:
+    description: "Path containing the Terraform root module."
+    required: false
+    default: "."
+  cache_bucket:
+    description: "S3 bucket holding the .terraform cache and plan binary."
+    required: true
+  cache_key:
+    description: "S3 key prefix from terraform-init. Auto-discovered from job env if omitted."
+    required: false
+    default: ""
+  varfile:
+    description: "Path (relative to working_directory) of the tfvars file. Empty = no -var-file."
+    required: false
+    default: ""
+  plan_args:
+    description: "Extra args passed to `<cli> plan`."
+    required: false
+    default: ""
+
+outputs:
+  pending_changes:
+    description: "true when the plan reported pending changes (exit 2)."
+    value: ${{ steps.plan.outputs.pending_changes }}
+  plan_succeeded:
+    description: "true when the plan executed without error (exit 0 or 2)."
+    value: ${{ steps.plan.outputs.plan_succeeded }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Resolve CLI"
+      id: cli
+      shell: bash
+      run: echo "cli=${TF_CLI:-tofu}" >> "$GITHUB_OUTPUT"
+
+    - name: "Set TF_WORKSPACE"
+      if: inputs.workspace != ''
+      shell: bash
+      run: echo "TF_WORKSPACE=${{ inputs.workspace }}" >> "$GITHUB_ENV"
+
+    - name: "Hydrate .terraform from cache"
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+        aws s3 cp "s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/terraform-dir.tgz" /tmp/terraform-dir.tgz
+        tar -xzf /tmp/terraform-dir.tgz
+        aws s3 cp "s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/terraform.lock.hcl" .terraform.lock.hcl 2>/dev/null || true
+
+    - name: "Terraform Plan"
+      id: plan
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set +e
+        ARGS=("-input=false" "-detailed-exitcode" "-out=tf.plan")
+        if [ -n "${{ inputs.varfile }}" ]; then
+          ARGS+=("-var-file=${{ inputs.varfile }}")
+        fi
+        ${{ steps.cli.outputs.cli }} plan "${ARGS[@]}" ${{ inputs.plan_args }} | tee plan.stdout
+        EC=${PIPESTATUS[0]}
+        case "$EC" in
+          0) echo "plan_succeeded=true"  >> "$GITHUB_OUTPUT"; echo "pending_changes=false" >> "$GITHUB_OUTPUT" ;;
+          2) echo "plan_succeeded=true"  >> "$GITHUB_OUTPUT"; echo "pending_changes=true"  >> "$GITHUB_OUTPUT" ;;
+          *) echo "plan_succeeded=false" >> "$GITHUB_OUTPUT"; echo "pending_changes=false" >> "$GITHUB_OUTPUT"; exit "$EC" ;;
+        esac
+
+    - name: "Upload plan binary"
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        aws s3 cp tf.plan "s3://${{ inputs.cache_bucket }}/${{ inputs.cache_key }}/tf.plan"
+
+    - name: "Comment on PR"
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      env:
+        PLAN_PATH: ${{ inputs.working_directory }}/plan.stdout
+        WS: ${{ inputs.workspace }}
+      with:
+        script: |
+          const fs = require('fs');
+          const plan = fs.readFileSync(process.env.PLAN_PATH, 'utf-8').slice(0, 60000);
+          const tag  = `<!-- terraform-plan:${process.env.WS} -->`;
+          const body = `${tag}\n#### Terraform Plan — \`${process.env.WS}\`\n\n<details><summary>Show plan</summary>\n\n\`\`\`hcl\n${plan}\n\`\`\`\n\n</details>`;
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
+          });
+          const existing = comments.find(c => c.body && c.body.startsWith(tag));
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body,
+            });
+          }

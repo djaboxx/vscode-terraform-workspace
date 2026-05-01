@@ -2221,6 +2221,7 @@
     "test:watch": "vitest",
     "test:vscode": "tsc -p test/vscode/tsconfig.json && node out/test-vscode/runTest.js",
     "coverage": "vitest run --coverage",
+    "coverage:open": "node -e \"const p=require('path').resolve('coverage/index.html');const o={darwin:'open',win32:'start'}[process.platform]||'xdg-open';require('child_process').spawn(o,[p],{stdio:'inherit',detached:true})\"",
     "package": "npx --yes @vscode/vsce package --no-dependencies",
     "deploy-local": "node esbuild.js --production && node -e \"const fs=require('fs'),path=require('path'),os=require('os');const name='happypathway.terraform-workspace-'+require('./package.json').version;const candidates=[process.env.VSCODE_EXTENSIONS_DIR,path.join(os.homedir(),'.vscode-server','extensions'),path.join(os.homedir(),'.vscode','extensions')].filter(Boolean);let found;for(const base of candidates){try{const dirs=fs.readdirSync(base).filter(d=>d.startsWith(name));if(dirs.length){found=path.join(base,dirs[0],'dist','extension.js');break;}}catch{}}if(!found){console.error('Could not find installed extension. Set VSCODE_EXTENSIONS_DIR and retry.');process.exit(1);}fs.copyFileSync('dist/extension.js',found);console.log('Deployed to',found);\"",
     "install-latest": "bash scripts/install-latest.sh",

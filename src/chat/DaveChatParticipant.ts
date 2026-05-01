@@ -437,14 +437,16 @@ export class DaveChatParticipant {
 
     messages.push(vscode.LanguageModelChatMessage.User(request.prompt));
 
-    // All terraform_* tools — Dave uses every one of them.
-    const terraformTools: vscode.LanguageModelChatTool[] = vscode.lm.tools
-      .filter(t => t.name.startsWith('terraform_'))
-      .map(t => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema,
-      }));
+    // Dave gets every tool currently registered in the language-model tool
+    // registry — extension-contributed (terraform_*), Copilot built-ins, MCP
+    // servers, and anything else the user has installed. Re-read on every
+    // request so newly registered tools (e.g. just-enabled MCP servers) are
+    // picked up without reloading the window.
+    const allTools: vscode.LanguageModelChatTool[] = vscode.lm.tools.map(t => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    }));
 
     const MAX_TOOL_ROUNDS = 5;
     let round = 0;
@@ -455,7 +457,7 @@ export class DaveChatParticipant {
 
         const response = await model.sendRequest(
           messages,
-          terraformTools.length > 0 ? { tools: terraformTools } : {},
+          allTools.length > 0 ? { tools: allTools } : {},
           token,
         );
 

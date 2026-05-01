@@ -25,17 +25,28 @@ describe('RepoLearner', () => {
   let mem: AgentMemory;
   beforeEach(() => { dir = tmpDir(); mem = new AgentMemory(dir); });
 
-  it('first-pass ingests README and commits, records lastSha', async () => {
+  it('first-pass ingests convention docs + commits, records lastSha', async () => {
     const auth = makeAuth({
       '/search/repositories': {
-        items: [{ full_name: 'acme/terraform-foo', description: 'Foo module', topics: ['learning', 'terraform'], default_branch: 'main' }],
+        items: [{ full_name: 'acme/terraform-foo', description: 'Foo module', topics: ['learning', 'terraform'], default_branch: 'main', language: 'HCL' }],
+      },
+      // Order matters: more-specific routes first so /commits/sha1 matches before /commits.
+      '/repos/acme/terraform-foo/commits/sha1': {
+        sha: 'sha1', html_url: 'https://x/sha1',
+        commit: { message: 'feat: initial', author: { name: 'Alice', date: '2026-04-01T00:00:00Z' } },
+        files: [{ filename: 'variables.tf', additions: 1, deletions: 0, patch: '+variable "x" {}' }],
+      },
+      '/repos/acme/terraform-foo/commits/sha0': {
+        sha: 'sha0', html_url: 'https://x/sha0',
+        commit: { message: 'chore: setup', author: { name: 'Bob', date: '2026-03-31T00:00:00Z' } },
+        files: [],
       },
       '/repos/acme/terraform-foo/commits': [
         { sha: 'sha1', html_url: 'https://x/sha1', commit: { message: 'feat: initial', author: { name: 'Alice', date: '2026-04-01T00:00:00Z' } } },
         { sha: 'sha0', html_url: 'https://x/sha0', commit: { message: 'chore: setup', author: { name: 'Bob', date: '2026-03-31T00:00:00Z' } } },
       ],
-      '/repos/acme/terraform-foo/contents/README.md': { encoding: 'base64', content: Buffer.from('# Foo Module\nDoes things.').toString('base64') },
-      '/repos/acme/terraform-foo/contents/variables.tf': { encoding: 'base64', content: Buffer.from('variable "x" {}').toString('base64') },
+      '/repos/acme/terraform-foo/contents/AGENTS.md': { encoding: 'base64', content: Buffer.from('# Agents\nUse Terraform fmt.').toString('base64') },
+      '/repos/acme/terraform-foo/contents/CONTRIBUTING.md': { encoding: 'base64', content: Buffer.from('# Contributing\nOpen a PR.').toString('base64') },
     });
 
     const learner = new RepoLearner(auth, mem, { owners: ['acme'], topic: 'learning' });
@@ -46,10 +57,14 @@ describe('RepoLearner', () => {
 
     const entries = mem.forTopic('repo:acme/terraform-foo');
     const contents = entries.map(e => e.content);
-    expect(contents.some(c => c.startsWith('Repo acme/terraform-foo:'))).toBe(true);
-    expect(contents.some(c => c.includes('Foo Module'))).toBe(true);
-    expect(contents.some(c => c.includes('variable "x"'))).toBe(true);
-    expect(contents.some(c => c.includes('feat: initial'))).toBe(true);
+    // Repo header line: "Repo {fullName} ({language}): {description}"
+    expect(contents.some(c => c.startsWith('Repo acme/terraform-foo (HCL):'))).toBe(true);
+    // Convention docs ingested.
+    expect(contents.some(c => c.startsWith('Convention doc AGENTS.md:'))).toBe(true);
+    expect(contents.some(c => c.startsWith('Convention doc CONTRIBUTING.md:'))).toBe(true);
+    // Commit subject line included with author + date.
+    expect(contents.some(c => c.includes('Alice: feat: initial'))).toBe(true);
+    // lastSha marker recorded.
     expect(contents.some(c => c.startsWith('__lastSha=sha1'))).toBe(true);
 
     mem.close();

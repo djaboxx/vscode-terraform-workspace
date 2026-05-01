@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "compositeActionOrg": "HappyPathway",
+  "repo": {
+    "name": "vscode-terraform-workspace",
+    "repoOrg": "HappyPathway",
+    "description": "",
+    "createRepo": false,
+    "isPrivate": false,
+    "enforcePrs": true,
+    "adminTeams": [],
+    "repoTopics": [
+      "terraform-managed"
+    ],
+    "vars": [],
+    "secrets": [
+      {
+        "name": "omg",
+        "value": "fuck yeah"
+      },
+      {
+        "name": "Avi",
+        "value": "awseomse"
+      }
+    ],
+    "createCodeowners": false,
+    "codeownersTeam": ""
+  },
+  "stateConfig": {
+    "bucket": "inf-tfstate-us-east-1",
+    "keyPrefix": "terraform-state-files",
+    "region": "us-east-1",
+    "dynamodbTable": "tf_remote_state",
+    "setBackend": false
+  },
+  "environments": [],
+  "compositeActions": {
+    "checkout": "gh-actions-checkout@v4",
+    "awsAuth": "aws-auth@main",
+    "ghAuth": "gh-auth@main",
+    "setupTerraform": "gh-actions-terraform@v1",
+    "terraformInit": "terraform-init@main",
+    "terraformPlan": "terraform-plan@main",
+    "terraformApply": "terraform-apply@main",
+    "s3Cleanup": "s3-cleanup@main"
+  }
+}

@@ -29,7 +29,7 @@ export interface SCProductScaffoldInputs {
   owner: string;
   /** Optional — kept for backwards compatibility with callers that still pass it. */
   portfolioId?: string;
-  supportEmail: string;
+  supportEmail?: string;
   /** S3 key for the CFN template artifact, e.g. "2-0-0.yaml". */
   templateKey: string;
   /**

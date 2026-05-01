@@ -4,3 +4,5 @@ out/
 *.vsix
 .vscode-test/
 *.js.map
+coverage/
+.vitest-cache/
