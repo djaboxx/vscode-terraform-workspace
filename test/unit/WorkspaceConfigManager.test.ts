@@ -86,6 +86,37 @@ describe('WorkspaceConfigManager.write + createDefault', () => {
     expect(state.files.has('/x/.vscode/terraform-workspace.json')).toBe(true);
     expect(state.files.has('/x/.vscode/mcp.json')).toBe(true);
   });
+
+  it('strips secret values before writing — they must never touch disk', async () => {
+    const m = new WorkspaceConfigManager(ctx);
+    const cfg = {
+      version: 1,
+      repo: {
+        name: 'r', repoOrg: 'o',
+        secrets: [{ name: 'AWS_SECRET_KEY', value: 'super-sensitive-value' }],
+        vars: [{ name: 'AWS_REGION', value: 'us-east-1' }],
+      },
+      environments: [
+        {
+          name: 'prod',
+          secrets: [{ name: 'DB_PASSWORD', value: 'hunter2' }],
+          vars: [],
+        },
+      ],
+    } as never;
+    await m.write(folder('/x') as never, cfg);
+    const text = Buffer.from(state.files.get('/x/.vscode/terraform-workspace.json')!).toString('utf-8');
+    // Names are kept (we need them for lifecycle management).
+    expect(text).toContain('AWS_SECRET_KEY');
+    expect(text).toContain('DB_PASSWORD');
+    // Values are gone.
+    expect(text).not.toContain('super-sensitive-value');
+    expect(text).not.toContain('hunter2');
+    // Variable values are NOT stripped — vars are non-secret by design.
+    expect(text).toContain('us-east-1');
+    // The original input object is untouched (we deep-clone before stripping).
+    expect((cfg as { repo: { secrets: { value: string }[] } }).repo.secrets[0].value).toBe('super-sensitive-value');
+  });
 });
 
 describe('WorkspaceConfigManager.writeMcpJson', () => {

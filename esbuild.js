@@ -6,9 +6,9 @@ const isWatch = process.argv.includes('--watch');
 const buildOptions = {
   entryPoints: ['src/extension.ts'],
   bundle: true,
-  // Native + WASM-loading modules must remain external so they resolve their
-  // own platform-specific assets at runtime instead of being inlined by esbuild.
-  external: ['vscode', 'better-sqlite3', 'libsodium-wrappers'],
+  // better-sqlite3 is a native addon and must stay external.
+  // libsodium-wrappers is pure JS/WASM and can be bundled directly.
+  external: ['vscode', 'better-sqlite3'],
   format: 'cjs',
   platform: 'node',
   target: 'node20',

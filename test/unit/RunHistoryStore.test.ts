@@ -126,8 +126,9 @@ describe('RunHistoryStore', () => {
     try {
       const store = new RunHistoryStore(dir);
       store.upsert(makeRun(1));
-      expect(existsSync(jsonPath)).toBe(true);
+      // Writes are debounced; dispose() flushes synchronously.
       store.dispose();
+      expect(existsSync(jsonPath)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -284,14 +284,26 @@ export class RunnersTreeProvider
     this._loading.add(key);
     this._onDidChangeTreeData.fire(); // show spinner
 
+    // Hard timeout so a hung AWS API call can't leave the spinner forever.
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      this._loading.delete(key);
+      this._onDidChangeTreeData.fire();
+    }, 15_000);
+
     this.client
       .getFullStatus(env)
       .then(status => {
+        if (timedOut) return;
+        clearTimeout(timeout);
         this._statusCache.set(key, status);
         this._loading.delete(key);
         this._onDidChangeTreeData.fire();
       })
       .catch(() => {
+        if (timedOut) return;
+        clearTimeout(timeout);
         this._loading.delete(key);
         this._onDidChangeTreeData.fire();
       });

@@ -32,6 +32,8 @@ import { GitRemoteParser } from './auth/GitRemoteParser.js';
 import { LocalActionsScaffolder } from './workflows/LocalActionsScaffolder.js';
 import { ExtensionServices } from './services.js';
 import { TfWorkspace, getWorkspaces } from './types/index.js';
+import { Telemetry } from './services/Telemetry.js';
+import { ProviderDocsCache } from './providers/ProviderDocsCache.js';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const auth = new GithubAuthProvider();
@@ -80,15 +82,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(outputChannel);
 
   // Telemetry shim — opt-in, gated on VS Code's global telemetry switch.
-  const { Telemetry } = await import('./services/Telemetry.js');
   const telemetry = new Telemetry(outputChannel);
   services.telemetry = telemetry;
   telemetry.event('extension.activate', { version: context.extension?.packageJSON?.version ?? 'unknown' });
 
   context.subscriptions.push(configManager.startWatching());
 
+  // Fire-and-forget — schema load reads from disk; don't block activation.
   const configValidator = new WorkspaceConfigValidator(context.extensionUri, configManager);
-  await configValidator.activate();
+  configValidator.activate().catch(err =>
+    outputChannel.appendLine(`[config-validator] init failed: ${err}`),
+  );
   context.subscriptions.push(configValidator);
 
   const actionlint = new ActionlintRunner();
@@ -99,7 +103,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(drift);
   services.drift = drift;
 
-  const { ProviderDocsCache } = await import('./providers/ProviderDocsCache.js');
   const providerDocs = new ProviderDocsCache(context.globalStorageUri.fsPath);
   services.providerDocs = providerDocs;
 
@@ -143,7 +146,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         .getConfiguration('terraformWorkspace')
         .get<boolean>('autoSyncWorkflows', true);
       if (!auto) return;
-      void runSyncWorkflows(services, { silent: true });
+      runSyncWorkflows(services, { silent: true }).catch(err =>
+        outputChannel.appendLine(`[auto-sync-workflows] ${err}`),
+      );
     }),
   );
 
@@ -192,8 +197,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     folderStatusBar.show();
   };
 
-  await refreshFolderStatusBar();
-  await refreshLastRunStatusBar();
+  // Fire-and-forget — don't block extension activation on GitHub network calls
+  // or auth prompts. If these hang, the tree providers below would never get
+  // registered and the user would see "no data provider registered" forever.
+  void refreshFolderStatusBar();
+  void refreshLastRunStatusBar();
   // Refresh the last-run badge every minute so the user gets passive feedback
   // without having to open the Runs view.
   const lastRunTimer = setInterval(refreshLastRunStatusBar, 60_000);
@@ -1259,6 +1267,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
 
+    vscode.commands.registerCommand('terraform.openWalkthrough', () => {
+      vscode.commands.executeCommand('workbench.action.openWalkthrough', 'HappyPathway.terraform-workspace#terraform-workspace.getStarted');
+    }),
+
     vscode.commands.registerCommand('terraform.scaffoldBackend', () => runBackendBootstrap()),
     vscode.commands.registerCommand('terraform.scaffoldOidcTrust', () => runOidcTrustPolicy(auth)),
     vscode.commands.registerCommand('terraform.scaffoldFromTemplate', () => runScaffoldFromTemplate(auth)),
@@ -1545,6 +1557,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const agentMemory = new AgentMemory(context.globalStorageUri.fsPath);
   context.subscriptions.push({ dispose: () => agentMemory.close() });
+  // Attach to the shared services object so chat participants and LM tools
+  // (registered above before agentMemory existed) can read it lazily.
+  services.agentMemory = agentMemory;
 
   const agentCfg = vscode.workspace.getConfiguration('terraformWorkspace.agent');
   const agentOwners = agentCfg.get<string[]>('owners', []);
@@ -1586,6 +1601,102 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (agentCfg.get<boolean>('enabled', false)) {
     proactiveAgent.start();
   }
+
+  // Proactive digest surface — runs independently of the issue-queue
+  // ProactiveAgent (which is opt-in). Whether or not the user has enabled
+  // autonomous task running, Dave can still pop up to say "hey, you've
+  // got 3 open todos and a recent failure — want to look?" Lazy-loaded
+  // so activation stays fast.
+  const { DigestWatcher } = await import('./agent/DigestWatcher.js');
+  const digestEnabled = vscode.workspace
+    .getConfiguration('terraformWorkspace')
+    .get<boolean>('dave.proactiveDigest', true);
+  const digestWatcher = new DigestWatcher(agentMemory, context);
+  context.subscriptions.push(digestWatcher);
+  if (digestEnabled) {
+    digestWatcher.start();
+  }
+
+  // Failure auto-capture: when RunHistoryStore observes a workflow run
+  // transition to a failed conclusion, drop a memory entry under the
+  // repo's topic. DigestWatcher then surfaces it. Dedup by run ID so
+  // re-poll of the same failure doesn't re-fire.
+  runHistory.setFailureObserver(run => {
+    const reason = run.conclusion === 'timed_out' ? 'timed out' : 'failed';
+    const summary = `${run.type} run ${reason} on ${run.repoSlug} — ${run.htmlUrl}`;
+    agentMemory.recordOnce(
+      `repo:${run.repoSlug}`,
+      'failure',
+      summary,
+      `tfrun:${run.id}`,
+      {
+        source: 'tf-run',
+        runId: run.id,
+        type: run.type,
+        conclusion: run.conclusion,
+        url: run.htmlUrl,
+        sha: run.commitSha,
+      },
+    );
+  });
+
+  // Inbox watcher — polls GitHub for PRs awaiting your review and files
+  // them as todos under the `inbox` topic. Surfaces via DigestWatcher.
+  // If auth isn't ready, the first tick simply fails into a memory note;
+  // subsequent ticks recover automatically once the user signs in.
+  const inboxEnabled = vscode.workspace
+    .getConfiguration('terraformWorkspace')
+    .get<boolean>('dave.inboxWatcher', true);
+  if (inboxEnabled) {
+    const { InboxWatcher } = await import('./agent/InboxWatcher.js');
+    const inboxWatcher = new InboxWatcher(agentMemory, auth);
+    context.subscriptions.push(inboxWatcher);
+    inboxWatcher.start();
+  }
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('terraform.dave.showDigest', async () => {
+      try {
+        await vscode.commands.executeCommand('workbench.action.chat.open', {
+          query: '@dave /digest',
+        });
+      } catch {
+        try {
+          await vscode.commands.executeCommand('workbench.action.chat.open', '@dave /digest');
+        } catch {
+          vscode.window.showWarningMessage('Could not open Copilot Chat. Open it manually and type `@dave /digest`.');
+        }
+      }
+    }),
+    vscode.commands.registerCommand('terraform.dave.checkDigestNow', async () => {
+      await digestWatcher.forceCheck();
+    }),
+  );
+
+  // Dave status bar + inbox QuickPick. Lazy-loaded so a failure here can't
+  // block activation. The status bar reflects open todos / unresolved
+  // failures from AgentMemory and tints warning-yellow when high-priority
+  // items exist (mirroring the IRON STATIC homework scheduler pattern).
+  const { DaveStatusBar, showInboxQuickPick } = await import('./agent/DaveStatusBar.js');
+  const daveStatusBar = new DaveStatusBar(agentMemory);
+  context.subscriptions.push(daveStatusBar);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('terraform.dave.showInbox', async () => {
+      await showInboxQuickPick(agentMemory, () => daveStatusBar.refresh());
+    }),
+    vscode.commands.registerCommand('terraform.dave.seedMemory', async () => {
+      const { seedAgentMemory } = await import('./agent/seedContent.js');
+      const report = seedAgentMemory(agentMemory);
+      daveStatusBar.refresh();
+      const total = report.decisionsAdded + report.playbooksAdded + report.factsAdded;
+      const skipped = report.decisionsSkipped + report.playbooksSkipped + report.factsSkipped;
+      vscode.window.showInformationMessage(
+        `Dave's memory seeded: ${total} new entries (${report.decisionsAdded} decisions, ` +
+        `${report.playbooksAdded} playbooks, ${report.factsAdded} facts). ` +
+        `${skipped} already present.`,
+      );
+    }),
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('terraform.agent.start', () => {

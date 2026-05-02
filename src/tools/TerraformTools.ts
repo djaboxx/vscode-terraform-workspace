@@ -53,6 +53,16 @@ import {
   InvokeLambdaLocallyInput,
   TailLambdaLogsInputSchema,
   TailLambdaLogsInput,
+  SelfIntrospectInputSchema,
+  SelfIntrospectInput,
+  RememberInputSchema,
+  RememberInput,
+  RecallInputSchema,
+  RecallInput,
+  MatchPlaybookInputSchema,
+  MatchPlaybookInput,
+  RecallDecisionsInputSchema,
+  RecallDecisionsInput,
 } from '../schemas/toolInputs.js';
 import { CompiledSchema, formatSchemaErrors } from '../schemas/defineSchema.js';
 import { WorkspaceAutoDiscovery } from '../discovery/WorkspaceAutoDiscovery.js';
@@ -98,6 +108,11 @@ export function registerTerraformTools(
     vscode.lm.registerTool('terraform_scaffold_python_dev_env', new ScaffoldPythonDevEnvTool()),
     vscode.lm.registerTool('terraform_invoke_lambda_locally', new InvokeLambdaLocallyTool(outputChannel)),
     vscode.lm.registerTool('terraform_tail_lambda_logs', new TailLambdaLogsTool(outputChannel)),
+    vscode.lm.registerTool('terraform_self_introspect', new SelfIntrospectTool(services)),
+    vscode.lm.registerTool('terraform_remember', new RememberTool(services)),
+    vscode.lm.registerTool('terraform_recall', new RecallTool(services)),
+    vscode.lm.registerTool('terraform_match_playbook', new MatchPlaybookTool(services)),
+    vscode.lm.registerTool('terraform_recall_decisions', new RecallDecisionsTool(services)),
   );
 }
 
@@ -1934,5 +1949,435 @@ class TailLambdaLogsTool implements vscode.LanguageModelTool<TailLambdaLogsInput
     } catch (err) {
       return textResult(`Failed to tail logs: ${(err as Error).message}`);
     }
+  }
+}
+
+// ─── terraform_self_introspect ───────────────────────────────────────────────
+
+/**
+ * Lets Dave (or any LM) read this extension's own source code from
+ * `Happypathway/vscode-terraform-workspace` on GitHub. Use when the agent
+ * is unsure how a feature works internally, wants to find a bug in itself,
+ * or is brainstorming improvements to its own implementation.
+ *
+ * Operations:
+ *  - `list`   → directory contents at `path` (default: repo root)
+ *  - `read`   → file contents at `path`
+ *  - `search` → GitHub code search restricted to this repo for `query`
+ *
+ * Uses GithubAuthProvider when a token is available (higher rate limits)
+ * and falls back to anonymous fetch otherwise — the repo is public, so
+ * unauthenticated reads still work.
+ */
+class SelfIntrospectTool implements vscode.LanguageModelTool<SelfIntrospectInput> {
+  private static readonly OWNER = 'Happypathway';
+  private static readonly REPO = 'vscode-terraform-workspace';
+  private static readonly DEFAULT_REF = 'main';
+
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<SelfIntrospectInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(SelfIntrospectInputSchema, options.input, 'terraform_self_introspect');
+    if (!v.ok) return v.result;
+    const { operation, path = '', query, ref = SelfIntrospectTool.DEFAULT_REF, limit = 15 } = v.value;
+
+    if (token.isCancellationRequested) return cancelledResult();
+
+    // Reject path-traversal attempts; GitHub Contents API would reject anyway,
+    // but we surface a clearer message and avoid sending the request.
+    const safePath = path.replace(/^\/+/, '');
+    if (safePath.split('/').some(seg => seg === '..')) {
+      return textResult('Invalid path: `..` segments are not permitted.');
+    }
+
+    try {
+      switch (operation) {
+        case 'list':
+          return await this.listDir(safePath, ref, token);
+        case 'read':
+          if (!safePath) return textResult('`read` requires a `path`.');
+          return await this.readFile(safePath, ref, token);
+        case 'search':
+          if (!query || !query.trim()) return textResult('`search` requires a non-empty `query`.');
+          return await this.searchCode(query, limit, token);
+      }
+    } catch (err) {
+      return textResult(`Self-introspect (${operation}) failed: ${(err as Error).message}`);
+    }
+    // Unreachable, but TS needs it.
+    return textResult(`Unknown operation: ${operation}`);
+  }
+
+  /** Build a fetch headers object, with auth token if available. */
+  private async authedHeaders(): Promise<{ headers: Record<string, string>; token: string | undefined }> {
+    const token = await this.services.auth.getToken(true).catch(() => undefined);
+    if (token) return { headers: this.services.auth.ghHeaders(token), token };
+    return {
+      headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      token: undefined,
+    };
+  }
+
+  private async ghFetch(url: string): Promise<Response> {
+    const { headers, token } = await this.authedHeaders();
+    return token ? this.services.auth.fetch(url, { headers }) : fetch(url, { headers });
+  }
+
+  private async listDir(
+    path: string,
+    ref: string,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const url =
+      `https://api.github.com/repos/${SelfIntrospectTool.OWNER}/${SelfIntrospectTool.REPO}` +
+      `/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`;
+    const response = await this.ghFetch(url);
+    if (token.isCancellationRequested) return cancelledResult();
+    if (!response.ok) {
+      return textResult(`GitHub returned ${response.status} for list \`${path || '/'}\` @${ref}.`);
+    }
+    const data = (await response.json()) as
+      | Array<{ name: string; path: string; type: 'file' | 'dir'; size?: number }>
+      | { name: string; path: string; type: string };
+    if (!Array.isArray(data)) {
+      return textResult(`\`${path}\` is a ${data.type}, not a directory. Use \`read\` instead.`);
+    }
+    const lines = [`# Listing of \`${path || '/'}\` @${ref}`, ''];
+    for (const entry of data) {
+      const marker = entry.type === 'dir' ? '📁' : '📄';
+      const sizeNote = entry.size != null && entry.type === 'file' ? ` (${entry.size} bytes)` : '';
+      lines.push(`- ${marker} \`${entry.path}\`${sizeNote}`);
+    }
+    return cappedTextResult(lines.join('\n'), 'directory listing');
+  }
+
+  private async readFile(
+    path: string,
+    ref: string,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    // Use the raw endpoint — avoids base64 + json overhead and honors `ref`.
+    const url =
+      `https://raw.githubusercontent.com/${SelfIntrospectTool.OWNER}/${SelfIntrospectTool.REPO}` +
+      `/${encodeURIComponent(ref)}/${encodeURI(path)}`;
+    const response = await this.ghFetch(url);
+    if (token.isCancellationRequested) return cancelledResult();
+    if (!response.ok) {
+      return textResult(`GitHub returned ${response.status} for read \`${path}\` @${ref}.`);
+    }
+    const body = await response.text();
+    const header = `# \`${path}\` @${ref} (${SelfIntrospectTool.OWNER}/${SelfIntrospectTool.REPO})\n\n`;
+    const lang = guessFenceLang(path);
+    return cappedTextResult(`${header}\`\`\`${lang}\n${body}\n\`\`\``, `file ${path}`);
+  }
+
+  private async searchCode(
+    query: string,
+    limit: number,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const q = `${query} repo:${SelfIntrospectTool.OWNER}/${SelfIntrospectTool.REPO}`;
+    const url = `https://api.github.com/search/code?q=${encodeURIComponent(q)}&per_page=${limit}`;
+    // Code search REQUIRES auth — the public REST API rejects anonymous calls
+    // for /search/code. Surface a clear message if no token.
+    const ghToken = await this.services.auth.getToken(true).catch(() => undefined);
+    if (!ghToken) {
+      return textResult(
+        'Code search requires a GitHub token. Sign into GitHub in VS Code and retry, or use the `list`/`read` operations instead.',
+      );
+    }
+    const headers = {
+      ...this.services.auth.ghHeaders(ghToken),
+      Accept: 'application/vnd.github.text-match+json',
+    };
+    const response = await this.services.auth.fetch(url, { headers });
+    if (token.isCancellationRequested) return cancelledResult();
+    if (!response.ok) {
+      return textResult(`GitHub search returned ${response.status} for query \`${query}\`.`);
+    }
+    const data = (await response.json()) as {
+      total_count: number;
+      items: Array<{
+        path: string;
+        html_url: string;
+        text_matches?: Array<{ fragment: string }>;
+      }>;
+    };
+    if (data.total_count === 0) {
+      return textResult(`No matches in ${SelfIntrospectTool.OWNER}/${SelfIntrospectTool.REPO} for \`${query}\`.`);
+    }
+    const lines = [
+      `# Self-introspect search: \`${query}\``,
+      `Found ${data.total_count} match(es); showing ${data.items.length}.`,
+      '',
+    ];
+    for (const item of data.items) {
+      lines.push(`### \`${item.path}\``);
+      lines.push(item.html_url);
+      const frag = item.text_matches?.[0]?.fragment;
+      if (frag) {
+        lines.push('```');
+        lines.push(frag.trim());
+        lines.push('```');
+      }
+      lines.push('');
+    }
+    return cappedTextResult(lines.join('\n'), 'self-introspect search');
+  }
+}
+
+function guessFenceLang(path: string): string {
+  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  switch (ext) {
+    case 'ts': case 'tsx': return 'typescript';
+    case 'js': case 'jsx': case 'mjs': case 'cjs': return 'javascript';
+    case 'json': return 'json';
+    case 'md': return 'markdown';
+    case 'yml': case 'yaml': return 'yaml';
+    case 'tf': case 'hcl': return 'hcl';
+    case 'py': return 'python';
+    case 'sh': case 'bash': return 'bash';
+    default: return '';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terraform_remember / terraform_recall
+//
+// Bridge between chat-Dave and the autonomous ProactiveAgent: both share the
+// same AgentMemory store. These tools let the chat persona deliberately write
+// notes during a conversation ("decided X because Y") and retrieve relevant
+// notes when starting a new turn ("what did we decide last time about Z?").
+// ─────────────────────────────────────────────────────────────────────────────
+
+class RememberTool implements vscode.LanguageModelTool<RememberInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<RememberInput>,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(RememberInputSchema, options.input, 'terraform_remember');
+    if (!v.ok) return v.result;
+    const memory = this.services.agentMemory;
+    if (!memory) {
+      return textResult('Agent memory is not initialised in this session.');
+    }
+    const { topic, kind, content } = v.value;
+    const id = memory.record(topic, kind, content);
+    return textResult(`Recorded ${kind} #${id} under topic \`${topic}\`.`);
+  }
+}
+
+class RecallTool implements vscode.LanguageModelTool<RecallInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<RecallInput>,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(RecallInputSchema, options.input, 'terraform_recall');
+    if (!v.ok) return v.result;
+    const memory = this.services.agentMemory;
+    if (!memory) {
+      return textResult('Agent memory is not initialised in this session.');
+    }
+    const { topic, limit = 20, includeRecentFailures = false, includeOpenItems = false } = v.value;
+    const entries = memory.forTopic(topic, limit);
+    const lines: string[] = [`# Memory for topic \`${topic}\` (${entries.length})`];
+    if (entries.length === 0) {
+      lines.push('_No notes recorded for this topic yet._');
+    } else {
+      for (const e of entries) {
+        const ts = new Date(e.createdAt).toISOString();
+        const status = e.resolvedAt ? ` ✓ ${e.resolution ?? ''}` : '';
+        lines.push(`- #${e.id} [${e.kind}] (${ts}) ${e.content}${status}`);
+      }
+    }
+    if (includeOpenItems) {
+      const open = memory.openItems().slice(0, 20);
+      lines.push('', `## Open todos / hypotheses (${open.length})`);
+      for (const e of open) lines.push(`- #${e.id} [${e.kind}] (topic: ${e.topic}) ${e.content}`);
+    }
+    if (includeRecentFailures) {
+      const fails = memory.recentFailures(10);
+      lines.push('', `## Recent failures (${fails.length})`);
+      for (const e of fails) lines.push(`- #${e.id} (topic: ${e.topic}) ${e.content}`);
+    }
+    return cappedTextResult(lines.join('\n'), 'memory recall');
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// terraform_match_playbook
+//
+// Scores known playbooks by keyword overlap with the user's query. Dave
+// is told (via system prompt) to call this at the start of any non-trivial
+// task so he can offer to replay an existing playbook before reinventing it.
+// This is the AI-first reflex: recognise the pattern, surface the playbook.
+// ──────────────────────────────────────────────────────────────────────
+
+class MatchPlaybookTool implements vscode.LanguageModelTool<MatchPlaybookInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<MatchPlaybookInput>,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(MatchPlaybookInputSchema, options.input, 'terraform_match_playbook');
+    if (!v.ok) return v.result;
+    const memory = this.services.agentMemory;
+    if (!memory) return textResult('Agent memory is not initialised in this session.');
+    const { query, limit = 5 } = v.value;
+
+    const names = memory.allPlaybookNames();
+    if (names.length === 0) {
+      return textResult('No playbooks recorded yet. Suggest the user run `/learn <name>` after a useful conversation to capture one.');
+    }
+
+    // Tokenize query: lowercase, split on non-word, drop short/stop tokens.
+    const stop = new Set(['the','a','an','and','or','of','for','to','in','on','with','is','it','this','that','by','at','as','be','my','our','your']);
+    const queryTokens = new Set(
+      query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 3 && !stop.has(t)),
+    );
+    if (queryTokens.size === 0) {
+      return textResult('Query contained no useful keywords — ask the user to be more specific.');
+    }
+
+    type Scored = { name: string; score: number; preview: string; rating: ReturnType<typeof memory.playbookRating> };
+    const scored: Scored[] = [];
+    for (const name of names) {
+      const body = memory.getPlaybookBody(name);
+      if (!body) continue;
+      // Score = overlap of distinct tokens between query and (name + body).
+      const haystack = `${name} ${body.content}`.toLowerCase();
+      let score = 0;
+      for (const tok of queryTokens) {
+        if (haystack.includes(tok)) score++;
+      }
+      // Boost if the playbook name itself matches a token directly.
+      const nameTokens = new Set(name.split(/[^a-z0-9]+/).filter(Boolean));
+      for (const tok of queryTokens) {
+        if (nameTokens.has(tok)) score += 2;
+      }
+      if (score === 0) continue;
+      const preview = body.content.replace(/\s+/g, ' ').slice(0, 200);
+      scored.push({ name, score, preview, rating: memory.playbookRating(name) });
+    }
+
+    if (scored.length === 0) {
+      return textResult(
+        `No playbook keyword-matches \`${query}\`. Known playbooks: ${names.join(', ')}.`,
+      );
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, limit);
+    const lines = [`# Playbook matches for: ${query}`, ''];
+    for (const m of top) {
+      const trusted = memory.isAutoTrusted(m.name);
+      const ratingStr = m.rating.good + m.rating.bad === 0
+        ? '(unrated)'
+        : `(👍${m.rating.good} 👎${m.rating.bad})`;
+      const trustedStr = trusted ? ' ✨ AUTO-TRUSTED' : '';
+      lines.push(`## \`${m.name}\` — score ${m.score} ${ratingStr}${trustedStr}`);
+      if (m.rating.bad > m.rating.good && m.rating.latestNote) {
+        lines.push(`> ⚠️ Last bad rating: ${m.rating.latestNote.slice(0, 200)}`);
+      }
+      lines.push(`Preview: ${m.preview}…`);
+      lines.push(`Replay with: \`@dave /playbook ${m.name}\``);
+      lines.push('');
+    }
+    lines.push(
+      'If a top match is AUTO-TRUSTED, just run it without asking. ' +
+      'If it\'s a confident match but not auto-trusted, tell the user "This looks like playbook X — want me to run it?" ' +
+      'before doing the work from scratch.',
+    );
+    return cappedTextResult(lines.join('\n'), 'playbook matches');
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// terraform_recall_decisions
+//
+// Walks every entry under `decision:{slug}` and ranks by keyword overlap.
+// Dave is told (system prompt) to call this whenever the user asks a
+// question with obvious tradeoffs ("X or Y", "should we", "which is better").
+// The point is: stop re-litigating decisions the user has already made.
+// ──────────────────────────────────────────────────────────────────────
+
+class RecallDecisionsTool implements vscode.LanguageModelTool<RecallDecisionsInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<RecallDecisionsInput>,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(RecallDecisionsInputSchema, options.input, 'terraform_recall_decisions');
+    if (!v.ok) return v.result;
+    const memory = this.services.agentMemory;
+    if (!memory) return textResult('Agent memory is not initialised in this session.');
+    const { query, limit = 5 } = v.value;
+
+    const slugs = memory.allDecisionSlugs();
+    if (slugs.length === 0) {
+      return textResult(
+        'No prior decisions recorded. Suggest the user capture this one with ' +
+        '`@dave /decide <slug> | <reasoning>` once it\'s settled.',
+      );
+    }
+
+    const stop = new Set(['the','a','an','and','or','of','for','to','in','on','with','is','it','this','that','by','at','as','be','my','our','your','vs','versus','should','we','use','using']);
+    const queryTokens = new Set(
+      query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 3 && !stop.has(t)),
+    );
+    if (queryTokens.size === 0) {
+      return textResult('Query contained no useful keywords — ask the user to be more specific.');
+    }
+
+    type Scored = { slug: string; score: number; latest: string; when: number };
+    const scored: Scored[] = [];
+    for (const slug of slugs) {
+      const entries = memory.forTopic(`decision:${slug}`, 50);
+      if (entries.length === 0) continue;
+      const blob = `${slug} ${entries.map(e => e.content).join(' ')}`.toLowerCase();
+      let score = 0;
+      for (const tok of queryTokens) {
+        if (blob.includes(tok)) score++;
+      }
+      const slugTokens = new Set(slug.split(/[^a-z0-9]+/).filter(Boolean));
+      for (const tok of queryTokens) {
+        if (slugTokens.has(tok)) score += 2;
+      }
+      if (score === 0) continue;
+      const latest = entries[0]!;
+      scored.push({
+        slug,
+        score,
+        latest: latest.content.replace(/\s+/g, ' ').slice(0, 400),
+        when: latest.createdAt,
+      });
+    }
+
+    if (scored.length === 0) {
+      return textResult(
+        `No prior decision matches \`${query}\`. Known decision slugs: ${slugs.slice(0, 20).join(', ')}.`,
+      );
+    }
+
+    scored.sort((a, b) => b.score - a.score || b.when - a.when);
+    const top = scored.slice(0, limit);
+    const lines = [`# Past decisions relevant to: ${query}`, ''];
+    for (const m of top) {
+      const date = new Date(m.when).toISOString().slice(0, 10);
+      lines.push(`## \`${m.slug}\` — score ${m.score} (${date})`);
+      lines.push(m.latest);
+      lines.push('');
+    }
+    lines.push(
+      'Cite the most relevant prior decision when answering: "Last time you decided X ' +
+      'for similar reasons (`slug` from date)." If circumstances genuinely differ, ' +
+      'say so explicitly before proposing a different choice.',
+    );
+    return cappedTextResult(lines.join('\n'), 'decision recall');
   }
 }

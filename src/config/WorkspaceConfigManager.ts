@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { WorkspaceConfig } from '../types/index.js';
 
 const CONFIG_FILENAME = 'terraform-workspace.json';
@@ -33,25 +34,45 @@ export class WorkspaceConfigManager {
    */
   async read(folder: vscode.WorkspaceFolder): Promise<WorkspaceConfig | undefined> {
     const uri = this.configUri(folder);
+    let bytes: Uint8Array;
     try {
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      const text = Buffer.from(bytes).toString('utf-8');
-      const raw = JSON.parse(text) as WorkspaceConfig & { workspaces?: WorkspaceConfig['workspaces'] };
-      // Normalise: flat repos may use `workspaces` instead of `environments`.
-      // Coerce to `environments` so all downstream consumers stay unchanged.
-      if (raw.workspaces && !raw.environments) {
-        raw.environments = raw.workspaces;
-      }
-      raw.environments = raw.environments ?? [];
-      return raw;
+      bytes = await vscode.workspace.fs.readFile(uri);
     } catch {
+      // File doesn't exist — not an error, just no config yet.
       return undefined;
     }
+    const text = Buffer.from(bytes).toString('utf-8');
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(text) as Record<string, unknown>;
+    } catch (err) {
+      // File exists but is malformed — surface this so the user knows their
+      // config is broken instead of silently falling back to "no config".
+      const msg = err instanceof Error ? err.message : String(err);
+      void vscode.window.showErrorMessage(
+        `Terraform Workspace: ${CONFIG_FILENAME} is malformed JSON: ${msg}`,
+      );
+      return undefined;
+    }
+    // Backwards compat: legacy configs used `workspaces`; normalize to `environments`.
+    if (raw.environments === undefined && Array.isArray(raw.workspaces)) {
+      raw.environments = raw.workspaces;
+    }
+    if (!Array.isArray(raw.environments)) {
+      raw.environments = [];
+    }
+    return raw as unknown as WorkspaceConfig;
   }
 
   /**
    * Writes (creates or overwrites) the config file for the given folder.
    * Creates the `.vscode/` directory if it doesn't exist.
+   *
+   * SECURITY: Strips `value` fields from any `secrets[]` arrays before
+   * serializing. Secret *names* are tracked in the config so we know which
+   * GitHub secrets to manage; secret *values* must only flow to the GitHub
+   * API and never touch disk. `.vscode/terraform-workspace.json` is typically
+   * source-controlled.
    */
   async write(folder: vscode.WorkspaceFolder, config: WorkspaceConfig): Promise<void> {
     const uri = this.configUri(folder);
@@ -63,7 +84,8 @@ export class WorkspaceConfigManager {
       // Already exists — ignore
     }
 
-    const json = JSON.stringify(config, null, 2);
+    const sanitized = stripSecretValues(config);
+    const json = JSON.stringify(sanitized, null, 2);
     await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
   }
 
@@ -354,4 +376,32 @@ export class WorkspaceConfigManager {
       w.dispose();
     }
   }
+}
+
+/**
+ * Returns a deep-cloned config with all `secrets[].value` fields stripped.
+ * Secret names are kept (we need them to manage the GitHub-side lifecycle);
+ * values are dropped because the resulting JSON is written to disk and
+ * typically committed to source control.
+ *
+ * Exported for testing.
+ */
+export function stripSecretValues(config: WorkspaceConfig): WorkspaceConfig {
+  // Structured clone preserves arrays/objects without mutating the input.
+  const clone = JSON.parse(JSON.stringify(config)) as WorkspaceConfig;
+  const scrubArray = (arr: unknown): void => {
+    if (!Array.isArray(arr)) return;
+    for (const entry of arr) {
+      if (entry && typeof entry === 'object' && 'value' in entry) {
+        delete (entry as { value?: unknown }).value;
+      }
+    }
+  };
+  scrubArray((clone.repo as { secrets?: unknown } | undefined)?.secrets);
+  if (Array.isArray(clone.environments)) {
+    for (const env of clone.environments) {
+      scrubArray((env as { secrets?: unknown }).secrets);
+    }
+  }
+  return clone;
 }

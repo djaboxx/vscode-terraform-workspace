@@ -3,7 +3,7 @@ import { TfOrganization } from '../types/index.js';
 import { GitRemoteParser } from './GitRemoteParser.js';
 
 const GITHUB_COM = 'github.com';
-const REQUIRED_SCOPES = ['repo', 'read:org', 'workflow'];
+const REQUIRED_SCOPES = ['repo', 'admin:org', 'workflow', 'delete_repo', 'admin:repo_hook', 'admin:org_hook'];
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));

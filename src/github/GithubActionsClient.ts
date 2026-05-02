@@ -219,7 +219,10 @@ export class GithubActionsClient {
         return undefined;
       }
       const runs = await this.getWorkflowRuns(owner, repo, workflowFile, 5);
-      const newRun = runs.find(r => new Date(r.created_at) > afterTimestamp);
+      // Use a small grace buffer (3s) to absorb GitHub server-clock skew —
+      // otherwise a run created in the same second as our trigger can be missed.
+      const cutoff = afterTimestamp.getTime() - 3000;
+      const newRun = runs.find(r => new Date(r.created_at).getTime() >= cutoff);
 
       if (newRun) {
         return newRun;

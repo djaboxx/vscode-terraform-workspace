@@ -733,3 +733,126 @@ export const RunnerGetLogsInputSchema = defineSchema<RunnerGetLogsInput>({
   },
   additionalProperties: false,
 });
+
+// ─── terraform_self_introspect ────────────────────────────────────────────────
+
+export interface SelfIntrospectInput {
+  /**
+   * What to do against this extension's own source repository
+   * (`Happypathway/vscode-terraform-workspace`).
+   *  - `list`: list directory contents at `path` (default repo root).
+   *  - `read`: read a single file at `path` (must be specified).
+   *  - `search`: GitHub code search restricted to this repo for `query`.
+   */
+  operation: 'list' | 'read' | 'search';
+  /** Repo-relative path. Used by `list` and `read`. */
+  path?: string;
+  /** Free-text code search query. Used by `search`. */
+  query?: string;
+  /** Git ref (branch / tag / sha). Defaults to `main`. */
+  ref?: string;
+  /** Max search results to return (default 15, max 30). */
+  limit?: number;
+}
+
+export const SelfIntrospectInputSchema = defineSchema<SelfIntrospectInput>({
+  type: 'object',
+  required: ['operation'],
+  properties: {
+    operation: { type: 'string', enum: ['list', 'read', 'search'] },
+    path: { type: 'string', nullable: true },
+    query: { type: 'string', nullable: true },
+    ref: { type: 'string', nullable: true },
+    limit: { type: 'integer', minimum: 1, maximum: 30, nullable: true },
+  },
+  additionalProperties: false,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terraform_remember / terraform_recall — agent persistent memory
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RememberInput {
+  /** Topic key for grouping notes — usually `repo:{owner}/{name}` or a free-form label. */
+  topic: string;
+  /** Note category. */
+  kind: 'fact' | 'decision' | 'hypothesis' | 'failure' | 'todo';
+  /** The note content itself. Keep it short and self-contained. */
+  content: string;
+}
+
+export const RememberInputSchema = defineSchema<RememberInput>({
+  type: 'object',
+  required: ['topic', 'kind', 'content'],
+  properties: {
+    topic: { type: 'string', minLength: 1 },
+    kind: { type: 'string', enum: ['fact', 'decision', 'hypothesis', 'failure', 'todo'] },
+    content: { type: 'string', minLength: 1 },
+  },
+  additionalProperties: false,
+});
+
+export interface RecallInput {
+  /** Topic key — same shape as in `terraform_remember`. */
+  topic: string;
+  /** Max notes to return for this topic. Defaults to 20. */
+  limit?: number;
+  /** When true, also include recent failures across all topics (default false). */
+  includeRecentFailures?: boolean;
+  /** When true, also include open todos/hypotheses across all topics (default false). */
+  includeOpenItems?: boolean;
+}
+
+export const RecallInputSchema = defineSchema<RecallInput>({
+  type: 'object',
+  required: ['topic'],
+  properties: {
+    topic: { type: 'string', minLength: 1 },
+    limit: { type: 'integer', minimum: 1, maximum: 100, nullable: true },
+    includeRecentFailures: { type: 'boolean', nullable: true },
+    includeOpenItems: { type: 'boolean', nullable: true },
+  },
+  additionalProperties: false,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terraform_match_playbook — proactive playbook discovery
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface MatchPlaybookInput {
+  /** Free-text description of what the user wants to do. */
+  query: string;
+  /** Max matches to return. Defaults to 5. */
+  limit?: number;
+}
+
+export const MatchPlaybookInputSchema = defineSchema<MatchPlaybookInput>({
+  type: 'object',
+  required: ['query'],
+  properties: {
+    query: { type: 'string', minLength: 1 },
+    limit: { type: 'integer', minimum: 1, maximum: 20, nullable: true },
+  },
+  additionalProperties: false,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terraform_recall_decisions — search past tradeoff decisions by keyword
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RecallDecisionsInput {
+  /** Free-text description of the decision being faced. */
+  query: string;
+  /** Max decisions to return. Defaults to 5. */
+  limit?: number;
+}
+
+export const RecallDecisionsInputSchema = defineSchema<RecallDecisionsInput>({
+  type: 'object',
+  required: ['query'],
+  properties: {
+    query: { type: 'string', minLength: 1 },
+    limit: { type: 'integer', minimum: 1, maximum: 20, nullable: true },
+  },
+  additionalProperties: false,
+});

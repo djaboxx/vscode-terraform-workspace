@@ -151,6 +151,46 @@
           {
             "name": "search",
             "description": "Search GitHub org repos for Terraform code examples"
+          },
+          {
+            "name": "remember",
+            "description": "Persist a note to Dave's shared memory for the active repo (format: 'kind: content')"
+          },
+          {
+            "name": "recall",
+            "description": "Show notes Dave has stored for the active repo (or for a topic you specify)"
+          },
+          {
+            "name": "memory",
+            "description": "Open the active repo's memory in a markdown editor"
+          },
+          {
+            "name": "learn",
+            "description": "Capture this conversation as a replayable playbook (`/learn <name>`)"
+          },
+          {
+            "name": "playbook",
+            "description": "List playbooks, or replay one with Dave's tools (`/playbook [name]`)"
+          },
+          {
+            "name": "playbook-rate",
+            "description": "Rate a playbook (`/playbook-rate <name> good|bad [note]`) so degraded ones surface in listings"
+          },
+          {
+            "name": "decide",
+            "description": "Capture a tradeoff decision (`/decide <slug> | <reasoning>`) so Dave can cite it next time the question comes up"
+          },
+          {
+            "name": "digest",
+            "description": "Show what Dave thinks is worth your attention right now: open todos, recent failures, unrated playbooks"
+          },
+          {
+            "name": "done",
+            "description": "Mark a memory todo / failure resolved (`/done <id> [resolution]`) so it stops showing up in `/digest`"
+          },
+          {
+            "name": "checkpoint",
+            "description": "Mid-session capture: file `learned:`, `failed:`, `decided:`, `todo:` lines into AgentMemory so they survive context compaction"
           }
         ]
       }
@@ -1331,6 +1371,146 @@
         }
       },
       {
+        "name": "terraform_self_introspect",
+        "displayName": "Inspect This Extension's Source",
+        "modelDescription": "Reads files, lists directories, or searches code in this extension's own GitHub repo (Happypathway/vscode-terraform-workspace). USE PROACTIVELY when: you're unsure how a feature is implemented, a tool is misbehaving and you want to read its source, the user reports a bug and you want to look at the relevant module, or you're brainstorming concrete improvements to the extension. Operations: 'list' (directory contents at path, default repo root), 'read' (full file contents at path), 'search' (GitHub code search restricted to this repo). Defaults to the 'main' branch.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "operation"
+          ],
+          "properties": {
+            "operation": {
+              "type": "string",
+              "enum": [
+                "list",
+                "read",
+                "search"
+              ],
+              "description": "What to do: list a directory, read a file, or search code."
+            },
+            "path": {
+              "type": "string",
+              "description": "Repo-relative path. Required for 'read'; defaults to repo root for 'list'."
+            },
+            "query": {
+              "type": "string",
+              "description": "Free-text code search query. Required for 'search'."
+            },
+            "ref": {
+              "type": "string",
+              "description": "Git ref (branch, tag, or sha). Defaults to 'main'."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30,
+              "description": "Max search results (default 15)."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_remember",
+        "displayName": "Record an Agent Memory Note",
+        "modelDescription": "Persists a single short note into the shared agent memory store. Use to record decisions you've made (kind='decision'), confirmed facts about the user's infra (kind='fact'), open questions to revisit (kind='hypothesis'), things that failed and shouldn't be retried the same way (kind='failure'), or follow-ups (kind='todo'). Topic should be a stable key — for repo-specific notes use 'repo:{owner}/{name}'. Notes survive across conversations and are visible to the autonomous ProactiveAgent and to terraform_recall.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["topic", "kind", "content"],
+          "properties": {
+            "topic": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Stable grouping key, e.g. 'repo:HappyPathway/foo' or 'aws:account-bootstrap'."
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["fact", "decision", "hypothesis", "failure", "todo"],
+              "description": "Note category."
+            },
+            "content": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The note itself. Keep it short and self-contained so it makes sense weeks later."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_recall",
+        "displayName": "Recall Agent Memory Notes",
+        "modelDescription": "Retrieves previously-recorded notes for a topic from the shared agent memory store. Use at the start of a non-trivial task to check whether you've already discussed it, made a decision, or hit a related failure. Optionally also include recent failures and open todos across all topics for broader context.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["topic"],
+          "properties": {
+            "topic": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Stable grouping key — must match the topic used with terraform_remember."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Max notes to return for this topic (default 20)."
+            },
+            "includeRecentFailures": {
+              "type": "boolean",
+              "description": "Also include recent failures across all topics (default false)."
+            },
+            "includeOpenItems": {
+              "type": "boolean",
+              "description": "Also include open todos and unresolved hypotheses across all topics (default false)."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_match_playbook",
+        "displayName": "Match Playbook to User Request",
+        "modelDescription": "Scores known playbooks (captured workflows) by keyword overlap with the user's request and returns the top matches with previews and ratings. Call this PROACTIVELY at the start of any non-trivial task — if a confident match exists, offer to replay it via `/playbook <name>` instead of doing the work from scratch. Pay attention to the rating: a playbook with more 👎 than 👍 ratings probably needs revision before being trusted.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Free-text description of what the user wants to accomplish. Usually paraphrase the user's most recent request."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "description": "Max matches to return (default 5)."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_recall_decisions",
+        "displayName": "Recall Past Tradeoff Decisions",
+        "modelDescription": "Searches the user's captured decision log (entries under topic `decision:{slug}`) for past tradeoffs relevant to the current question. Call this PROACTIVELY whenever the user asks a question with obvious tradeoffs (\"X or Y\", \"should we use\", \"which is better\", \"how should I\"). Cite the most relevant prior decision in your answer. If circumstances genuinely differ, explain why before proposing something different.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Free-text description of the decision being faced. Usually paraphrase the user's question."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "description": "Max decisions to return (default 5)."
+            }
+          }
+        }
+      },
+      {
         "name": "ghe_runner_get_status",
         "displayName": "Get GHE Runner Status",
         "modelDescription": "Returns the current health of self-hosted GitHub Actions runner environments: ECS running/desired/pending task counts, ECS service events, and the list of GitHub-side runners with their status (idle/busy/offline). Use this first when diagnosing runner issues. Optionally narrows to a single named environment (e.g. 'csvd-dev-ew').",
@@ -1435,6 +1615,11 @@
         "command": "terraform.callNotes.open",
         "key": "ctrl+alt+n",
         "mac": "cmd+alt+n"
+      },
+      {
+        "command": "terraform.openWalkthrough",
+        "key": "ctrl+shift+t w",
+        "mac": "cmd+shift+t w"
       }
     ],
     "viewsContainers": {
@@ -1442,7 +1627,7 @@
         {
           "id": "terraform-workspace",
           "title": "Terraform Workspace",
-          "icon": "images/terraform-activitybar.svg"
+          "icon": "images/icon.png"
         }
       ]
     },
@@ -1716,6 +1901,30 @@
         "category": "Terraform"
       },
       {
+        "command": "terraform.dave.showDigest",
+        "title": "Dave: Show Digest (what's on my plate)",
+        "icon": "$(inbox)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.dave.checkDigestNow",
+        "title": "Dave: Check For New Digest Items Now",
+        "icon": "$(bell)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.dave.showInbox",
+        "title": "Dave: Show Inbox (triage open items)",
+        "icon": "$(inbox)",
+        "category": "Terraform"
+      },
+      {
+        "command": "terraform.dave.seedMemory",
+        "title": "Dave: Seed Memory (load starter decisions, playbooks, conventions)",
+        "icon": "$(database)",
+        "category": "Terraform"
+      },
+      {
         "command": "terraform.agent.showStatus",
         "title": "Agent: Show Output Log",
         "icon": "$(output)",
@@ -1786,6 +1995,12 @@
         "command": "terraform.runners.viewLogs",
         "title": "Tail Logs\u2026",
         "icon": "$(output)"
+      },
+      {
+        "command": "terraform.openWalkthrough",
+        "title": "Open Walkthrough",
+        "icon": "$(book)",
+        "category": "Terraform"
       }
     ],
     "menus": {
@@ -1922,6 +2137,16 @@
           "type": "boolean",
           "default": false,
           "description": "Enable the autonomous agent. Polls GitHub Issues for the configured trigger label and attempts to resolve them via the registered Terraform tools."
+        },
+        "terraformWorkspace.dave.proactiveDigest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let Dave surface a notification (hourly + on focus regain) when there are new open todos, recent failures, or low-rated playbooks worth your attention. Independent of the autonomous agent."
+        },
+        "terraformWorkspace.dave.inboxWatcher": {
+          "type": "boolean",
+          "default": true,
+          "description": "Periodically poll GitHub for PRs awaiting your review and file them as todos under the `inbox` topic, surfaced via Dave's digest."
         },
         "terraformWorkspace.agent.owners": {
           "type": "array",

@@ -12,6 +12,7 @@ import { DriftDetector } from './workflows/DriftDetector.js';
 import { Telemetry } from './services/Telemetry.js';
 import { ProviderDocsCache } from './providers/ProviderDocsCache.js';
 import { GheRunnersClient } from './runners/GheRunnersClient.js';
+import type { AgentMemory } from './agent/AgentMemory.js';
 
 export interface ExtensionServices {
   auth: GithubAuthProvider;
@@ -33,4 +34,11 @@ export interface ExtensionServices {
   providerDocs?: ProviderDocsCache;
   /** Optional — manages GHE self-hosted runner environments. */
   runnersClient?: GheRunnersClient;
+  /**
+   * Optional — shared persistent agent memory. Constructed during activation
+   * after the chat participant + tools register, then attached so handlers
+   * can read it lazily at invocation time. Lets Dave (chat) and the
+   * autonomous ProactiveAgent share the same notes/decisions/failures.
+   */
+  agentMemory?: AgentMemory;
 }

@@ -50,7 +50,8 @@ export class GithubOrgsClient {
 
   /**
    * Lists teams in the organization. Used by the AI when generating
-   * workspace bootstrap configs that include reviewer teams.
+   * workspace bootstrap configs that include reviewer teams. Paginated:
+   * orgs commonly have >100 teams.
    */
   async listTeams(org: string): Promise<Array<{ id: number; name: string; slug: string }>> {
     const token = await this.auth.getToken(true);
@@ -58,21 +59,19 @@ export class GithubOrgsClient {
       return [];
     }
 
-    const response = await this.auth.fetch(`${this.auth.apiBaseUrl}/orgs/${org}/teams?per_page=100`, {
-      headers: this.headers(token),
-    });
-
-    if (!response.ok) {
-      return [];
+    const all: Array<{ id: number; name: string; slug: string }> = [];
+    const perPage = 100;
+    for (let page = 1; page <= 10; page++) {
+      const response = await this.auth.fetch(
+        `${this.auth.apiBaseUrl}/orgs/${org}/teams?per_page=${perPage}&page=${page}`,
+        { headers: this.headers(token) },
+      );
+      if (!response.ok) break;
+      const teams = (await response.json()) as Array<{ id: number; name: string; slug: string }>;
+      all.push(...teams);
+      if (teams.length < perPage) break;
     }
-
-    const teams = (await response.json()) as Array<{
-      id: number;
-      name: string;
-      slug: string;
-    }>;
-
-    return teams;
+    return all;
   }
 
   /**
@@ -85,8 +84,43 @@ export class GithubOrgsClient {
   }
 
   /**
+   * Creates a new team in the organization and returns the created team.
+   * Uses `closed` privacy so team members are hidden from non-members.
+   */
+  async createTeam(
+    org: string,
+    teamName: string,
+    description = '',
+  ): Promise<{ id: number; name: string; slug: string } | null> {
+    const token = await this.auth.getToken(true);
+    if (!token) return null;
+    const response = await this.auth.fetch(`${this.auth.apiBaseUrl}/orgs/${org}/teams`, {
+      method: 'POST',
+      headers: this.headers(token),
+      body: JSON.stringify({ name: teamName, description, privacy: 'closed' }),
+    });
+    if (!response.ok) return null;
+    const team = (await response.json()) as { id: number; name: string; slug: string };
+    return team;
+  }
+
+  /**
+   * Adds a user to a team as a member. Idempotent — safe to call if the user
+   * is already a member.
+   */
+  async addTeamMember(org: string, teamSlug: string, username: string): Promise<void> {
+    const token = await this.auth.getToken(true);
+    if (!token) return;
+    await this.auth.fetch(
+      `${this.auth.apiBaseUrl}/orgs/${org}/teams/${teamSlug}/memberships/${username}`,
+      { method: 'PUT', headers: this.headers(token), body: JSON.stringify({ role: 'member' }) },
+    );
+  }
+
+  /**
    * Lists all repositories in the organization that contain Terraform config
-   * (detected by the presence of the `terraform-managed` topic or *.tf files).
+   * (detected by the presence of the `terraform-managed` topic). Paginated —
+   * orgs with >100 TF-managed repos would otherwise silently truncate.
    * This is a best-effort heuristic — not guaranteed to be exhaustive.
    */
   async listTerraformRepos(org: string): Promise<string[]> {
@@ -95,17 +129,20 @@ export class GithubOrgsClient {
       return [];
     }
 
-    const response = await this.auth.fetch(
-      `${this.auth.apiBaseUrl}/search/repositories?q=org:${org}+topic:terraform-managed&per_page=100`,
-      { headers: this.headers(token) }
-    );
-
-    if (!response.ok) {
-      return [];
+    const all: string[] = [];
+    const perPage = 100;
+    for (let page = 1; page <= 10; page++) {
+      const response = await this.auth.fetch(
+        `${this.auth.apiBaseUrl}/search/repositories?q=org:${org}+topic:terraform-managed&per_page=${perPage}&page=${page}`,
+        { headers: this.headers(token) },
+      );
+      if (!response.ok) break;
+      const data = (await response.json()) as { items?: Array<{ name: string }> };
+      const items = data.items ?? [];
+      all.push(...items.map(r => `${org}/${r.name}`));
+      if (items.length < perPage) break;
     }
-
-    const data = (await response.json()) as { items: Array<{ name: string }> };
-    return (data.items ?? []).map(r => `${org}/${r.name}`);
+    return all;
   }
 
   /**

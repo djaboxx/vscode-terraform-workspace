@@ -4,7 +4,7 @@
   "repo": {
     "name": "vscode-terraform-workspace",
     "repoOrg": "HappyPathway",
-    "description": "",
+    "description": "managing everything in just the right way... Daves way. ",
     "createRepo": false,
     "isPrivate": false,
     "enforcePrs": true,
@@ -13,18 +13,9 @@
       "terraform-managed"
     ],
     "vars": [],
-    "secrets": [
-      {
-        "name": "omg",
-        "value": "fuck yeah"
-      },
-      {
-        "name": "Avi",
-        "value": "awseomse"
-      }
-    ],
+    "secrets": [],
     "createCodeowners": false,
-    "codeownersTeam": ""
+    "codeownersTeam": "terraform-reviewers"
   },
   "stateConfig": {
     "bucket": "inf-tfstate-us-east-1",
@@ -33,7 +24,37 @@
     "dynamodbTable": "tf_remote_state",
     "setBackend": false
   },
-  "environments": [],
+  "environments": [
+    {
+      "name": "new-environment",
+      "cacheBucket": "",
+      "runnerGroup": "self-hosted",
+      "canAdminsBypass": true,
+      "deploymentBranchPolicy": {
+        "branch": "main",
+        "protectedBranches": true,
+        "restrictBranches": true,
+        "createBranchProtection": false,
+        "createBranch": false,
+        "enforceAdmins": true,
+        "requiredPullRequestReviews": {
+          "dismissStaleReviews": true,
+          "requireCodeOwnerReviews": true,
+          "requiredApprovingReviewCount": 1
+        }
+      },
+      "reviewers": {
+        "users": [],
+        "teams": [],
+        "enforceReviewers": false
+      },
+      "stateConfig": {},
+      "vars": [],
+      "secrets": [],
+      "preventSelfReview": false,
+      "waitTimer": 15
+    }
+  ],
   "compositeActions": {
     "checkout": "gh-actions-checkout@v4",
     "awsAuth": "aws-auth@main",

@@ -45,6 +45,34 @@ export interface GhaRepoPublicKey {
 export class GithubEnvironmentsClient {
   constructor(private readonly auth: GithubAuthProvider) {}
 
+  /**
+   * Page through a GitHub list endpoint that returns
+   * `{ <itemsKey>: T[], total_count?: number }` and accumulate every page.
+   * Stops when a page returns fewer than `per_page` items, or when 10 pages
+   * (1000 items) have been fetched as a runaway safety stop.
+   */
+  private async paginate<T>(
+    url: string,
+    itemsKey: string,
+    token: string,
+  ): Promise<T[]> {
+    const all: T[] = [];
+    const perPage = 100;
+    const sep = url.includes('?') ? '&' : '?';
+    for (let page = 1; page <= 10; page++) {
+      const response = await this.auth.fetch(
+        `${url}${sep}per_page=${perPage}&page=${page}`,
+        { headers: this.headers(token) },
+      );
+      if (!response.ok) break;
+      const data = (await response.json()) as Record<string, unknown>;
+      const items = (data[itemsKey] as T[] | undefined) ?? [];
+      all.push(...items);
+      if (items.length < perPage) break;
+    }
+    return all;
+  }
+
   // ─── Environments (= Terraform workspaces) ───────────────────────────────
 
   /** Lists all GitHub Environments for a repository. */
@@ -53,18 +81,11 @@ export class GithubEnvironmentsClient {
     if (!token) {
       return [];
     }
-
-    const response = await this.auth.fetch(
-      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments?per_page=100`,
-      { headers: this.headers(token) }
+    return this.paginate<GhaEnvironment>(
+      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments`,
+      'environments',
+      token,
     );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = (await response.json()) as { environments: GhaEnvironment[] };
-    return data.environments ?? [];
   }
 
   /** Converts a GhaEnvironment to our TfWorkspace domain type. */
@@ -191,18 +212,11 @@ export class GithubEnvironmentsClient {
     if (!token) {
       return [];
     }
-
-    const response = await this.auth.fetch(
-      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments/${encodeURIComponent(environment)}/variables?per_page=100`,
-      { headers: this.headers(token) }
+    return this.paginate<GhaVariable>(
+      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/environments/${encodeURIComponent(environment)}/variables`,
+      'variables',
+      token,
     );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = (await response.json()) as { variables: GhaVariable[] };
-    return data.variables ?? [];
   }
 
   /** Creates or updates an environment variable (plaintext). */
@@ -267,18 +281,11 @@ export class GithubEnvironmentsClient {
     if (!token) {
       return [];
     }
-
-    const response = await this.auth.fetch(
-      `${this.auth.apiBaseUrl}/orgs/${org}/actions/secrets?per_page=100`,
-      { headers: this.headers(token) }
+    return this.paginate<GhaSecret>(
+      `${this.auth.apiBaseUrl}/orgs/${org}/actions/secrets`,
+      'secrets',
+      token,
     );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = (await response.json()) as { secrets: GhaSecret[] };
-    return data.secrets ?? [];
   }
 
   /** Lists org-level variables with their values. */
@@ -287,18 +294,11 @@ export class GithubEnvironmentsClient {
     if (!token) {
       return [];
     }
-
-    const response = await this.auth.fetch(
-      `${this.auth.apiBaseUrl}/orgs/${org}/actions/variables?per_page=100`,
-      { headers: this.headers(token) }
+    return this.paginate<GhaVariable>(
+      `${this.auth.apiBaseUrl}/orgs/${org}/actions/variables`,
+      'variables',
+      token,
     );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = (await response.json()) as { variables: GhaVariable[] };
-    return data.variables ?? [];
   }
 
   /** Sets an org-level secret (encrypted). */
@@ -410,18 +410,11 @@ export class GithubEnvironmentsClient {
     if (!token) {
       return [];
     }
-
-    const response = await this.auth.fetch(
-      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/secrets?per_page=100`,
-      { headers: this.headers(token) }
+    return this.paginate<GhaSecret>(
+      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/secrets`,
+      'secrets',
+      token,
     );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = (await response.json()) as { secrets: GhaSecret[] };
-    return data.secrets ?? [];
   }
 
   /** Sets a repo-level secret (encrypted). */
@@ -470,18 +463,11 @@ export class GithubEnvironmentsClient {
     if (!token) {
       return [];
     }
-
-    const response = await this.auth.fetch(
-      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/variables?per_page=100`,
-      { headers: this.headers(token) }
+    return this.paginate<GhaVariable>(
+      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/variables`,
+      'variables',
+      token,
     );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = (await response.json()) as { variables: GhaVariable[] };
-    return data.variables ?? [];
   }
 
   /** Creates or updates a repo-level variable. */
@@ -556,9 +542,19 @@ export class GithubEnvironmentsClient {
       ...(opts.reviewerUserIds ?? []).map(id => ({ type: 'User' as const, id })),
       ...(opts.reviewerTeamIds ?? []).map(id => ({ type: 'Team' as const, id })),
     ];
+
+    // GitHub rejects prevent_self_review=true with no reviewers (422). Catch it early.
+    if (opts.preventSelfReview && reviewers.length === 0) {
+      throw new Error(
+        `Environment "${environment}": "Prevent self-review" requires at least one required reviewer. ` +
+        `Add a reviewer user or team under Environments → ${environment} → Reviewers.`,
+      );
+    }
+
     const body: Record<string, unknown> = {};
     if (opts.waitTimer !== undefined) body.wait_timer = opts.waitTimer;
-    if (opts.preventSelfReview !== undefined) body.prevent_self_review = opts.preventSelfReview;
+    // GitHub rejects prevent_self_review (even false) when there are no reviewers — omit it entirely in that case.
+    if (opts.preventSelfReview !== undefined && reviewers.length > 0) body.prevent_self_review = opts.preventSelfReview;
     if (reviewers.length > 0) body.reviewers = reviewers;
     if (opts.deploymentBranchPolicy !== undefined) body.deployment_branch_policy = opts.deploymentBranchPolicy;
 
@@ -567,7 +563,13 @@ export class GithubEnvironmentsClient {
       { method: 'PUT', headers: this.headers(token), body: JSON.stringify(body) },
     );
     if (!response.ok) {
-      throw new Error(`Failed to upsert environment ${environment}: ${await response.text()}`);
+      const text = await response.text();
+      let detail = text;
+      try {
+        const parsed = JSON.parse(text) as { message?: string };
+        if (parsed.message) detail = parsed.message;
+      } catch { /* use raw text */ }
+      throw new Error(`Environment "${environment}": ${detail}`);
     }
   }
 
@@ -724,10 +726,13 @@ let sodiumPromise: Promise<typeof import('libsodium-wrappers')> | undefined;
 async function loadSodium(): Promise<typeof import('libsodium-wrappers')> {
   if (!sodiumPromise) {
     sodiumPromise = (async () => {
-      // Dynamic import keeps libsodium out of the startup path (it loads a WASM blob)
+      // Dynamic import keeps libsodium out of the startup path (it loads a WASM blob).
+      // When bundled by esbuild, libsodium-wrappers may expose its API as the default
+      // export rather than the module namespace — handle both.
       const mod = await import('libsodium-wrappers');
-      await mod.ready;
-      return mod;
+      const sodium = (mod as any).default ?? mod;
+      await sodium.ready;
+      return sodium;
     })();
   }
   return sodiumPromise;

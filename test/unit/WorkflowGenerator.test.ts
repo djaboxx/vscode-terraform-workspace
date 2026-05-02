@@ -44,11 +44,16 @@ describe('WorkflowGenerator', () => {
     expect(plan.yaml).toMatchSnapshot();
   });
 
-  it('apply workflow gates apply on pending_changes', async () => {
+  it('apply workflow uses two-job pattern with approval gate on apply job', async () => {
     const gen = new WorkflowGenerator(stubEnvsClient);
     const out = await gen.generateAll(baseConfig());
     const apply = out.find(o => o.type === 'apply')!;
-    expect(apply.yaml).toContain("if: steps.plan.outputs.pending_changes == 'true'");
+    // plan job runs first with no environment gate
+    expect(apply.yaml).toContain('needs: plan');
+    // apply job is gated on pending_changes output from the plan job
+    expect(apply.yaml).toContain("if: needs.plan.outputs.pending_changes == 'true'");
+    // apply job uses the cache_key from the plan job output (not steps.init)
+    expect(apply.yaml).toContain('cache_key:    ${{ needs.plan.outputs.cache_key }}');
     expect(apply.yaml).toContain('Cache Cleanup');
   });
 

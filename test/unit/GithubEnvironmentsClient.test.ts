@@ -153,13 +153,36 @@ describe('GithubEnvironmentsClient.upsertEnvironment', () => {
     await new GithubEnvironmentsClient(auth as never).upsertEnvironment('o', 'r', 'prod', {
       waitTimer: 5,
       preventSelfReview: true,
+      reviewerUserIds: [42],  // required alongside preventSelfReview
     });
     expect(calls[0].init?.method).toBe('PUT');
     expect(calls[0].url).toContain('/repos/o/r/environments/prod');
-    expect(JSON.parse(calls[0].init?.body as string)).toEqual({
-      wait_timer: 5,
-      prevent_self_review: true,
+    const body = JSON.parse(calls[0].init?.body as string);
+    expect(body.wait_timer).toBe(5);
+    expect(body.prevent_self_review).toBe(true);
+    expect(body.reviewers).toEqual([{ type: 'User', id: 42 }]);
+  });
+
+  it('omits prevent_self_review from body when no reviewers are present', async () => {
+    const { auth, calls } = mockAuth(() => new Response(null, { status: 200 }));
+    await new GithubEnvironmentsClient(auth as never).upsertEnvironment('o', 'r', 'prod', {
+      waitTimer: 5,
+      preventSelfReview: false,  // explicitly false, but no reviewers
     });
+    const body = JSON.parse(calls[0].init?.body as string);
+    expect(body).not.toHaveProperty('prevent_self_review');
+    expect(body).not.toHaveProperty('reviewers');
+    expect(body.wait_timer).toBe(5);
+  });
+
+  it('throws before calling the API when preventSelfReview is true but no reviewers are set', async () => {
+    const { auth, calls } = mockAuth(() => new Response(null, { status: 200 }));
+    await expect(
+      new GithubEnvironmentsClient(auth as never).upsertEnvironment('o', 'r', 'prod', {
+        preventSelfReview: true,
+      }),
+    ).rejects.toThrow(/Prevent self-review.*at least one required reviewer/);
+    expect(calls).toHaveLength(0);  // no API call made
   });
 
   it('combines reviewer user + team IDs into a typed array', async () => {
@@ -178,11 +201,18 @@ describe('GithubEnvironmentsClient.upsertEnvironment', () => {
     expect(body.deployment_branch_policy).toEqual({ protected_branches: true, custom_branch_policies: false });
   });
 
-  it('throws on non-OK response', async () => {
-    const { auth } = mockAuth(() => new Response('nope', { status: 422 }));
+  it('throws on non-OK response with parsed message', async () => {
+    const { auth } = mockAuth(() => new Response(JSON.stringify({ message: 'Something went wrong' }), { status: 422 }));
     await expect(
       new GithubEnvironmentsClient(auth as never).upsertEnvironment('o', 'r', 'prod', { waitTimer: 1 }),
-    ).rejects.toThrow(/Failed to upsert environment prod[\s\S]*nope/);
+    ).rejects.toThrow(/Environment "prod": Something went wrong/);
+  });
+
+  it('falls back to raw text when response body is not JSON', async () => {
+    const { auth } = mockAuth(() => new Response('nope', { status: 500 }));
+    await expect(
+      new GithubEnvironmentsClient(auth as never).upsertEnvironment('o', 'r', 'prod', { waitTimer: 1 }),
+    ).rejects.toThrow(/Environment "prod": nope/);
   });
 });
 

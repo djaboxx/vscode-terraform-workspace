@@ -33,7 +33,13 @@ export class AuthDiagnostics {
   ) {}
 
   async run(token?: vscode.CancellationToken): Promise<ScopeReport> {
-    const session = await this.auth.getSession(true);
+    // Try silent first; if the cached session doesn't satisfy the current scope
+    // set, fall back to an interactive prompt so the user actually sees the
+    // VS Code auth dialog rather than a misleading "not authenticated" error.
+    let session = await this.auth.getSession(true);
+    if (!session) {
+      session = await this.auth.getSession(false);
+    }
     const probes: ScopeProbe[] = [];
 
     if (!session) {
@@ -135,7 +141,7 @@ export class AuthDiagnostics {
         }
         return {
           name, endpoint, status: 'forbidden', httpStatus: 403,
-          detail: 'Token lacks the required scope. Re-authenticate with `read:org` / `repo` / `workflow`.',
+          detail: 'Token lacks the required scope. Re-authenticate via Command Palette → GitHub: Sign Out.',
         };
       }
       if (response.status === 404) {

@@ -13,7 +13,9 @@ type PanelMessage =
   | { type: 'addEnvironment' }
   | { type: 'removeEnvironment'; index: number }
   | { type: 'openRaw' }
-  | { type: 'ready' };
+  | { type: 'ready' }
+  | { type: 'fetchTeams'; org: string }
+  | { type: 'createTeam'; org: string; teamName: string; members: string[]; fieldId: string };
 
 type PushStep = { label: string; status: 'ok' | 'error' | 'skipped'; detail?: string };
 
@@ -130,6 +132,27 @@ export class WorkspaceConfigPanel {
       case 'openRaw':
         await this.manager.openInEditor(this.folder);
         break;
+
+      case 'fetchTeams': {
+        const teams = await this.orgsClient?.listTeams(msg.org) ?? [];
+        this.panel.webview.postMessage({ type: 'teamsLoaded', teams });
+        break;
+      }
+
+      case 'createTeam': {
+        const team = await this.orgsClient?.createTeam(msg.org, msg.teamName);
+        if (team && msg.members.length) {
+          await Promise.allSettled(
+            msg.members.map(m => this.orgsClient?.addTeamMember(msg.org, team.slug, m))
+          );
+        }
+        if (team) {
+          this.panel.webview.postMessage({ type: 'teamCreated', team, fieldId: msg.fieldId });
+        } else {
+          this.panel.webview.postMessage({ type: 'teamCreateError', detail: 'Failed to create team — check org name and permissions.' });
+        }
+        break;
+      }
     }
   }
 
@@ -174,29 +197,58 @@ export class WorkspaceConfigPanel {
           post({ label: 'Repo metadata', status: 'error', detail: String(err) });
         }
 
-        // 2. Repo-level variables
-        for (const v of this.config.repo.vars ?? []) {
-          if (!v.name) continue;
-          try {
-            await this.envsClient!.setRepoVariable(owner, repo, v.name, v.value ?? '');
-            post({ label: `Repo var ${v.name}`, status: 'ok' });
-          } catch (err) {
-            post({ label: `Repo var ${v.name}`, status: 'error', detail: String(err) });
+        // 2. Repo-level variables — upsert present ones, delete orphans from GitHub
+        {
+          const liveVars = await this.envsClient!.listRepoVariables(owner, repo).catch(() => [] as { name: string }[]);
+          const configNames = new Set((this.config.repo.vars ?? []).map(v => v.name).filter(Boolean));
+          for (const live of liveVars) {
+            if (!configNames.has(live.name)) {
+              try {
+                await this.envsClient!.deleteRepoVariable(owner, repo, live.name);
+                post({ label: `Repo var ${live.name}`, status: 'ok', detail: 'deleted' });
+              } catch (err) {
+                post({ label: `Repo var ${live.name}`, status: 'error', detail: String(err) });
+              }
+            }
+          }
+          for (const v of this.config.repo.vars ?? []) {
+            if (!v.name) continue;
+            try {
+              await this.envsClient!.setRepoVariable(owner, repo, v.name, v.value ?? '');
+              post({ label: `Repo var ${v.name}`, status: 'ok' });
+            } catch (err) {
+              post({ label: `Repo var ${v.name}`, status: 'error', detail: String(err) });
+            }
           }
         }
 
-        // 3. Repo-level secrets (skip blanks — value is write-only and may not be re-entered)
-        for (const s of this.config.repo.secrets ?? []) {
-          if (!s.name) continue;
-          if (!s.value) {
-            post({ label: `Repo secret ${s.name}`, status: 'skipped', detail: 'no value entered' });
-            continue;
+        // 3. Repo-level secrets — upsert present ones, delete orphans from GitHub
+        // (skip blank values — value is write-only and may not be re-entered)
+        {
+          const liveSecrets = await this.envsClient!.listRepoSecrets(owner, repo).catch(() => [] as { name: string }[]);
+          const configNames = new Set((this.config.repo.secrets ?? []).map(s => s.name).filter(Boolean));
+          for (const live of liveSecrets) {
+            if (!configNames.has(live.name)) {
+              try {
+                await this.envsClient!.deleteRepoSecret(owner, repo, live.name);
+                post({ label: `Repo secret ${live.name}`, status: 'ok', detail: 'deleted' });
+              } catch (err) {
+                post({ label: `Repo secret ${live.name}`, status: 'error', detail: String(err) });
+              }
+            }
           }
-          try {
-            await this.envsClient!.setRepoSecret(owner, repo, s.name, s.value);
-            post({ label: `Repo secret ${s.name}`, status: 'ok' });
-          } catch (err) {
-            post({ label: `Repo secret ${s.name}`, status: 'error', detail: String(err) });
+          for (const s of this.config.repo.secrets ?? []) {
+            if (!s.name) continue;
+            if (!s.value) {
+              post({ label: `Repo secret ${s.name}`, status: 'skipped', detail: 'no value entered' });
+              continue;
+            }
+            try {
+              await this.envsClient!.setRepoSecret(owner, repo, s.name, s.value);
+              post({ label: `Repo secret ${s.name}`, status: 'ok' });
+            } catch (err) {
+              post({ label: `Repo secret ${s.name}`, status: 'error', detail: String(err) });
+            }
           }
         }
 
@@ -251,29 +303,58 @@ export class WorkspaceConfigPanel {
       return;
     }
 
-    // 4b. Env-level variables
-    for (const v of env.vars ?? []) {
-      if (!v.name) continue;
-      try {
-        await this.envsClient!.setEnvironmentVariable(owner, repo, env.name, v.name, v.value ?? '');
-        post({ label: `Env ${env.name} var ${v.name}`, status: 'ok' });
-      } catch (err) {
-        post({ label: `Env ${env.name} var ${v.name}`, status: 'error', detail: String(err) });
+    // 4b. Env-level variables — upsert present ones, delete orphans from GitHub
+    {
+      const liveVars = await this.envsClient!.listEnvironmentVariables(owner, repo, env.name).catch(() => [] as { name: string }[]);
+      const configNames = new Set((env.vars ?? []).map(v => v.name).filter(Boolean));
+      for (const live of liveVars) {
+        if (!configNames.has(live.name)) {
+          try {
+            await this.envsClient!.deleteEnvironmentVariable(owner, repo, env.name, live.name);
+            post({ label: `Env ${env.name} var ${live.name}`, status: 'ok', detail: 'deleted' });
+          } catch (err) {
+            post({ label: `Env ${env.name} var ${live.name}`, status: 'error', detail: String(err) });
+          }
+        }
+      }
+      for (const v of env.vars ?? []) {
+        if (!v.name) continue;
+        try {
+          await this.envsClient!.setEnvironmentVariable(owner, repo, env.name, v.name, v.value ?? '');
+          post({ label: `Env ${env.name} var ${v.name}`, status: 'ok' });
+        } catch (err) {
+          post({ label: `Env ${env.name} var ${v.name}`, status: 'error', detail: String(err) });
+        }
       }
     }
 
-    // 4c. Env-level secrets
-    for (const s of env.secrets ?? []) {
-      if (!s.name) continue;
-      if (!s.value) {
-        post({ label: `Env ${env.name} secret ${s.name}`, status: 'skipped', detail: 'no value entered' });
-        continue;
+    // 4c. Env-level secrets — upsert present ones, delete orphans from GitHub
+    // (skip blank values — value is write-only and may not be re-entered)
+    {
+      const liveSecrets = await this.envsClient!.listEnvironmentSecrets(owner, repo, env.name).catch(() => [] as { name: string }[]);
+      const configNames = new Set((env.secrets ?? []).map(s => s.name).filter(Boolean));
+      for (const live of liveSecrets) {
+        if (!configNames.has(live.name)) {
+          try {
+            await this.envsClient!.deleteEnvironmentSecret(owner, repo, env.name, live.name);
+            post({ label: `Env ${env.name} secret ${live.name}`, status: 'ok', detail: 'deleted' });
+          } catch (err) {
+            post({ label: `Env ${env.name} secret ${live.name}`, status: 'error', detail: String(err) });
+          }
+        }
       }
-      try {
-        await this.envsClient!.setEnvironmentSecret(owner, repo, env.name, s.name, s.value);
-        post({ label: `Env ${env.name} secret ${s.name}`, status: 'ok' });
-      } catch (err) {
-        post({ label: `Env ${env.name} secret ${s.name}`, status: 'error', detail: String(err) });
+      for (const s of env.secrets ?? []) {
+        if (!s.name) continue;
+        if (!s.value) {
+          post({ label: `Env ${env.name} secret ${s.name}`, status: 'skipped', detail: 'no value entered' });
+          continue;
+        }
+        try {
+          await this.envsClient!.setEnvironmentSecret(owner, repo, env.name, s.name, s.value);
+          post({ label: `Env ${env.name} secret ${s.name}`, status: 'ok' });
+        } catch (err) {
+          post({ label: `Env ${env.name} secret ${s.name}`, status: 'error', detail: String(err) });
+        }
       }
     }
   }
@@ -492,6 +573,14 @@ export class WorkspaceConfigPanel {
       font-size: 11px;
       margin-left: 6px;
     }
+    .team-new-form {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-focusBorder, #007acc);
+      border-radius: 4px;
+      padding: 10px;
+      margin-top: 6px;
+    }
+    .team-new-form input { display: block; width: 100%; margin-bottom: 6px; }
   </style>
 </head>
 <body>
@@ -505,10 +594,12 @@ export class WorkspaceConfigPanel {
 <div class="content" id="content">
   <p style="color: var(--vscode-descriptionForeground)">Loading...</p>
 </div>
+<datalist id="orgTeams"></datalist>
 
 <script>
   const vscode = acquireVsCodeApi();
   let state = null;
+  let availableTeams = []; // { id, name, slug }[]
 
   // ── Messaging ─────────────────────────────────────────────────────────────
   const pushStatusEl = document.getElementById('pushStatus');
@@ -532,6 +623,15 @@ export class WorkspaceConfigPanel {
     } else if (msg.type === 'pushDone') {
       pushStatusEl.insertAdjacentHTML('beforeend',
         '<div style="margin-top:6px"><strong>Done.</strong> '+msg.oks+' ok, '+msg.errors+' error(s).</div>');
+    } else if (msg.type === 'teamsLoaded') {
+      availableTeams = msg.teams;
+      refreshTeamDatalist();
+    } else if (msg.type === 'teamCreated') {
+      availableTeams.push(msg.team);
+      refreshTeamDatalist();
+      if (msg.fieldId) addTag(msg.fieldId, msg.team.slug);
+    } else if (msg.type === 'teamCreateError') {
+      alert('Team creation failed: ' + msg.detail);
     }
   });
 
@@ -560,13 +660,15 @@ export class WorkspaceConfigPanel {
       'Terraform Workspace: ' + (state.repo?.name || 'New');
     document.getElementById('content').innerHTML = buildFullForm(state);
     attachEventHandlers();
+    // Fetch org teams whenever state is loaded (populates datalist dropdowns)
+    const org = state.repo?.repoOrg;
+    if (org) vscode.postMessage({ type: 'fetchTeams', org });
   }
 
   function buildFullForm(cfg) {
     return \`
       \${buildRepoSection(cfg)}
       \${buildStateSection(cfg)}
-      \${buildCompositeActionsSection(cfg)}
       \${buildEnvironmentsSection(cfg)}
     \`;
   }
@@ -580,16 +682,18 @@ export class WorkspaceConfigPanel {
       <div class="section-body">
         \${field('name', 'Repo Name', r.name||'', 'text', 'GitHub repository name')}
         \${field('repoOrg', 'GitHub Org', r.repoOrg||'', 'text', 'Organization that owns the repo')}
-        \${field('compositeActionOrg', 'Composite Action Org', cfg.compositeActionOrg||'HappyPathway', 'text', 'Org that hosts composite action repos')}
         \${field('description', 'Description', r.description||'', 'text')}
         \${checkField('createRepo', 'Create Repo', r.createRepo===true)}
         \${checkField('isPrivate', 'Private', r.isPrivate===true)}
         \${checkField('enforcePrs', 'Enforce PRs', r.enforcePrs!==false)}
         \${checkField('createCodeowners', 'Create CODEOWNERS', r.createCodeowners===true)}
-        \${field('codeownersTeam', 'Codeowners Team', r.codeownersTeam||'', 'text')}
+        <div class="field-row">
+          <label for="codeownersTeam">Codeowners Team</label>
+          <div><input type="text" id="codeownersTeam" value="\${esc(r.codeownersTeam||'')}" list="orgTeams" placeholder="Select or type team…" /></div>
+        </div>
         <div class="field-row">
           <label>Admin Teams</label>
-          <div>\${buildTagInput('adminTeams', r.adminTeams||[])}</div>
+          <div>\${buildTeamTagInput('adminTeams', r.adminTeams||[])}</div>
         </div>
         <div class="field-row">
           <label>Repo Topics</label>
@@ -619,25 +723,6 @@ export class WorkspaceConfigPanel {
         \${field('stateKeyPrefix', 'Key Prefix', s.keyPrefix||'terraform-state-files', 'text')}
         \${field('stateDynamoTable', 'DynamoDB Table', s.dynamodbTable||'tf_remote_state', 'text')}
         \${checkField('stateSetBackend', 'Set Backend Per-Env', s.setBackend===true, 'When true, writes backend-configs/{env}.tf instead of a global backend.tf')}
-      </div>
-    </section>\`;
-  }
-
-  // ── Composite Actions Section ─────────────────────────────────────────────
-  function buildCompositeActionsSection(cfg) {
-    const a = cfg.compositeActions || {};
-    return \`
-    <section>
-      <div class="section-header" onclick="toggleSection(this)">Composite Action Refs <span>▾</span></div>
-      <div class="section-body">
-        \${field('caCheckout', 'Checkout', a.checkout||'gh-actions-checkout@v4', 'text')}
-        \${field('caAwsAuth', 'AWS Auth', a.awsAuth||'aws-auth@main', 'text')}
-        \${field('caGhAuth', 'GH Auth', a.ghAuth||'gh-auth@main', 'text')}
-        \${field('caSetupTf', 'Setup Terraform', a.setupTerraform||'gh-actions-terraform@v1', 'text')}
-        \${field('caTfInit', 'Terraform Init', a.terraformInit||'terraform-init@main', 'text')}
-        \${field('caTfPlan', 'Terraform Plan', a.terraformPlan||'terraform-plan@main', 'text')}
-        \${field('caTfApply', 'Terraform Apply', a.terraformApply||'terraform-apply@main', 'text')}
-        \${field('caS3Cleanup', 'S3 Cleanup', a.s3Cleanup||'s3-cleanup@main', 'text')}
       </div>
     </section>\`;
   }
@@ -698,7 +783,7 @@ export class WorkspaceConfigPanel {
           \${checkField('envEnforceReviewers_'+index, 'Enforce Reviewers', rev.enforceReviewers===true)}
           <div class="field-row">
             <label>Reviewer Teams</label>
-            <div>\${buildTagInput('envRevTeams_'+index, rev.teams||[])}</div>
+            <div>\${buildTeamTagInput('envRevTeams_'+index, rev.teams||[])}</div>
           </div>
           <div class="field-row">
             <label>Reviewer Users</label>
@@ -758,6 +843,29 @@ export class WorkspaceConfigPanel {
     <div class="tag-input-wrap" id="tagWrap_\${id}">
       \${tagHtml}
       <input class="tag-input" id="tagInput_\${id}" placeholder="Add..." onkeydown="tagKeydown(event,'\${id}')" />
+    </div>\`;
+  }
+
+  function buildTeamTagInput(id, tags) {
+    const tagHtml = tags.map(t => \`
+      <span class="tag">
+        \${esc(t)}
+        <button type="button" onclick="removeTag(this, '\${id}')">×</button>
+      </span>\`).join('');
+    return \`
+    <div class="tag-input-wrap" id="tagWrap_\${id}">
+      \${tagHtml}
+      <input class="tag-input" id="tagInput_\${id}" placeholder="Select or type team\u2026" list="orgTeams" onkeydown="tagKeydown(event,'\${id}')" />
+      <button type="button" class="secondary" style="font-size:11px;padding:2px 8px;flex-shrink:0;margin-left:4px" onclick="showCreateTeam('\${id}')">&#xFF0B; New</button>
+    </div>
+    <div id="createTeamForm_\${id}" class="team-new-form" style="display:none">
+      <div style="font-size:11px;font-weight:600;margin-bottom:8px">Create New Team</div>
+      <input type="text" id="newTeamName_\${id}" placeholder="Team name (e.g. platform-team)" />
+      <input type="text" id="newTeamMembers_\${id}" placeholder="Members \u2014 comma-separated GitHub usernames (optional)" />
+      <div style="display:flex;gap:6px;margin-top:2px">
+        <button type="button" onclick="submitCreateTeam('\${id}')">Create Team</button>
+        <button type="button" class="secondary" onclick="hideCreateTeam('\${id}')">Cancel</button>
+      </div>
     </div>\`;
   }
 
@@ -871,7 +979,6 @@ export class WorkspaceConfigPanel {
     if (!state) return;
 
     // Repo
-    state.compositeActionOrg = val('compositeActionOrg');
     state.repo = state.repo || {};
     state.repo.name = val('name');
     state.repo.repoOrg = val('repoOrg');
@@ -893,17 +1000,6 @@ export class WorkspaceConfigPanel {
     state.stateConfig.keyPrefix = val('stateKeyPrefix') || undefined;
     state.stateConfig.dynamodbTable = val('stateDynamoTable') || undefined;
     state.stateConfig.setBackend = checked('stateSetBackend');
-
-    // Composite actions
-    state.compositeActions = state.compositeActions || {};
-    state.compositeActions.checkout = val('caCheckout') || undefined;
-    state.compositeActions.awsAuth = val('caAwsAuth') || undefined;
-    state.compositeActions.ghAuth = val('caGhAuth') || undefined;
-    state.compositeActions.setupTerraform = val('caSetupTf') || undefined;
-    state.compositeActions.terraformInit = val('caTfInit') || undefined;
-    state.compositeActions.terraformPlan = val('caTfPlan') || undefined;
-    state.compositeActions.terraformApply = val('caTfApply') || undefined;
-    state.compositeActions.s3Cleanup = val('caS3Cleanup') || undefined;
 
     // Environments
     const envCards = document.querySelectorAll('.env-card');
@@ -973,6 +1069,42 @@ export class WorkspaceConfigPanel {
       name: row.cells[0]?.querySelector('input')?.value || '',
       value: row.cells[1]?.querySelector('input')?.value || '',
     })).filter(r => r.name);
+  }
+
+  // ── Team management ───────────────────────────────────────────────────────
+  function refreshTeamDatalist() {
+    const dl = document.getElementById('orgTeams');
+    if (!dl) return;
+    dl.innerHTML = availableTeams.map(t =>
+      \`<option value="\${esc(t.slug)}">\${esc(t.name)}</option>\`
+    ).join('');
+  }
+
+  function showCreateTeam(fieldId) {
+    const form = document.getElementById('createTeamForm_' + fieldId);
+    if (form) form.style.display = 'block';
+    document.getElementById('newTeamName_' + fieldId)?.focus();
+  }
+
+  function hideCreateTeam(fieldId) {
+    const form = document.getElementById('createTeamForm_' + fieldId);
+    if (form) form.style.display = 'none';
+    const nameEl = document.getElementById('newTeamName_' + fieldId);
+    const membersEl = document.getElementById('newTeamMembers_' + fieldId);
+    if (nameEl) nameEl.value = '';
+    if (membersEl) membersEl.value = '';
+  }
+
+  function submitCreateTeam(fieldId) {
+    const nameEl = document.getElementById('newTeamName_' + fieldId);
+    const membersEl = document.getElementById('newTeamMembers_' + fieldId);
+    const teamName = nameEl?.value?.trim();
+    if (!teamName) { nameEl?.focus(); return; }
+    const members = (membersEl?.value || '').split(',').map(m => m.trim()).filter(Boolean);
+    const org = state?.repo?.repoOrg;
+    if (!org) { alert('Set the GitHub Org field first, then try again.'); return; }
+    vscode.postMessage({ type: 'createTeam', org, teamName, members, fieldId });
+    hideCreateTeam(fieldId);
   }
 </script>
 </body>

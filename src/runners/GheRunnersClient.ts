@@ -354,36 +354,50 @@ export class GheRunnersClient {
       : `${env.githubUrl}/api/v3`;
 
     try {
-      const response = await this.auth.fetch(
-        `${apiBase}/orgs/${env.githubOrg}/actions/runners?per_page=100`,
-        {
-          headers: {
-            Authorization: `token ${authToken}`,
-            Accept: 'application/vnd.github.v3+json',
+      // Paginate — orgs with >100 self-hosted runners would otherwise be
+      // silently truncated, hiding offline runners from the diagnostics view.
+      const all: Array<{
+        id: number;
+        name: string;
+        status: string;
+        busy: boolean;
+        labels: string[];
+      }> = [];
+      const perPage = 100;
+      for (let page = 1; page <= 10; page++) {
+        const response = await this.auth.fetch(
+          `${apiBase}/orgs/${env.githubOrg}/actions/runners?per_page=${perPage}&page=${page}`,
+          {
+            headers: {
+              Authorization: `token ${authToken}`,
+              Accept: 'application/vnd.github.v3+json',
+            },
+            signal: token ? AbortSignal.timeout(10_000) : undefined,
           },
-          signal: token ? AbortSignal.timeout(10_000) : undefined,
-        },
-      );
-
-      if (!response.ok) return [];
-
-      const data = (await response.json()) as {
-        runners: Array<{
-          id: number;
-          name: string;
-          status: string;
-          busy: boolean;
-          labels: Array<{ name: string }>;
-        }>;
-      };
-
-      return (data.runners ?? []).map(r => ({
-        id: r.id,
-        name: r.name,
-        status: r.status,
-        busy: r.busy,
-        labels: (r.labels ?? []).map(l => l.name),
-      }));
+        );
+        if (!response.ok) break;
+        const data = (await response.json()) as {
+          runners?: Array<{
+            id: number;
+            name: string;
+            status: string;
+            busy: boolean;
+            labels: Array<{ name: string }>;
+          }>;
+        };
+        const runners = data.runners ?? [];
+        all.push(
+          ...runners.map(r => ({
+            id: r.id,
+            name: r.name,
+            status: r.status,
+            busy: r.busy,
+            labels: (r.labels ?? []).map(l => l.name),
+          })),
+        );
+        if (runners.length < perPage) break;
+      }
+      return all;
     } catch {
       return [];
     }

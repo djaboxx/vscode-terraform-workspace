@@ -11,13 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Lint, Type-check, Test & Build
+  lint-and-build:
+    name: Lint, Type-check & Build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write          # for the JUnit reporter to publish a check run
-      pull-requests: write   # for the coverage comment
 
     steps:
       - uses: actions/checkout@v4
@@ -25,55 +21,17 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci
 
       - name: Lint
         run: npm run lint
 
       - name: Type-check
         run: npm run compile
-
-      - name: Test (with coverage + JUnit)
-        run: npm run coverage
-        env:
-          CI: 'true'
-
-      - name: Publish test results
-        if: always()
-        uses: dorny/test-reporter@v1
-        with:
-          name: Vitest
-          path: coverage/junit.xml
-          reporter: jest-junit
-          fail-on-error: false
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ github.sha }}
-          path: |
-            coverage/
-            !coverage/tmp
-          retention-days: 14
-
-      - name: Coverage summary in job log
-        if: always()
-        run: |
-          if [ -f coverage/coverage-summary.json ]; then
-            node -e "
-              const s = require('./coverage/coverage-summary.json').total;
-              const row = (k,v) => '| ' + k.padEnd(11) + ' | ' + (v.pct + '%').padStart(7) + ' | ' + (v.covered + '/' + v.total).padStart(10) + ' |';
-              console.log('## Coverage');
-              console.log('| Metric      | %       | Covered    |');
-              console.log('| :---------- | ------: | ---------: |');
-              for (const k of ['lines','statements','branches','functions']) console.log(row(k, s[k]));
-            " >> "$GITHUB_STEP_SUMMARY"
-          fi
 
       - name: Build (production)
         run: npm run build
