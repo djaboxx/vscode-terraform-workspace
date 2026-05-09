@@ -743,15 +743,7 @@ function codebuildDispatchSteps(
           set -euo pipefail
           mkdir -p ./tf-artifacts
           aws s3 cp "s3://\${ARTIFACT_BUCKET}/\${ARTIFACT_KEY}" ./tf-artifacts/ --recursive || true
-          ls -la ./tf-artifacts || true
-
-      - name: "Upload plan artifacts to workflow"
-        if: always()
-        uses: "actions/upload-artifact@v4"
-        with:
-          name: "terraform-${command}-${envName}"
-          path: "./tf-artifacts/"
-          if-no-files-found: warn`;
+          ls -la ./tf-artifacts || true`;
 }
 
 function generateCodeBuildPlanWorkflow(

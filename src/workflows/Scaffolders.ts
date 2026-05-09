@@ -317,6 +317,309 @@ export async function runScaffoldFromTemplate(auth: AuthLike): Promise<void> {
   }
 }
 
+// ─── Multi-account hub-and-spoke OIDC ────────────────────────────────────────
+
+/** Minimal static map from Terraform resource-type segment to IAM service prefix. */
+const TF_SEGMENT_TO_IAM: Record<string, string> = {
+  cloudwatch:    'cloudwatch',
+  logs:          'logs',
+  route53:       'route53',
+  wafv2:         'wafv2',
+  waf:           'waf',
+  apigatewayv2:  'apigateway',
+  api:           'apigateway',
+  acm:           'acm',
+  cognito:       'cognito-idp',
+  kms:           'kms',
+  secretsmanager:'secretsmanager',
+  ssm:           'ssm',
+  codebuild:     'codebuild',
+  codepipeline:  'codepipeline',
+  codecommit:    'codecommit',
+  ecr:           'ecr',
+  ecs:           'ecs',
+  eks:           'eks',
+  elb:           'elasticloadbalancing',
+  lb:            'elasticloadbalancing',
+  alb:           'elasticloadbalancing',
+  elasticache:   'elasticache',
+  elasticsearch: 'es',
+  opensearch:    'es',
+  kinesis:       'kinesis',
+  firehose:      'firehose',
+  glue:          'glue',
+  athena:        'athena',
+  stepfunctions: 'states',
+  sfn:           'states',
+  eventbridge:   'events',
+  cloudfront:    'cloudfront',
+  s3:            's3',
+  lambda:        'lambda',
+  iam:           'iam',
+  sqs:           'sqs',
+  sns:           'sns',
+  dynamodb:      'dynamodb',
+  rds:           'rds',
+  vpc:           'ec2',
+  subnet:        'ec2',
+  security:      'ec2',
+  instance:      'ec2',
+  ec2:           'ec2',
+};
+
+/**
+ * Returns the minimal IAM actions a Terraform operator needs for the given
+ * set of AWS IAM service prefixes. Falls back to `{svc}:*` for unknown services.
+ */
+export function suggestSpokeIamPolicy(
+  services: string[],
+  opts: { stateBucketArn?: string; lockTableArn?: string; includeIam?: boolean } = {},
+): object {
+  const statements: object[] = [];
+
+  // ── Terraform state backend (always included) ─────────────────────────────
+  statements.push({
+    Sid:      'TerraformStateAccess',
+    Effect:   'Allow',
+    Action:   ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket', 's3:GetBucketLocation'],
+    Resource: opts.stateBucketArn
+      ? [opts.stateBucketArn, `${opts.stateBucketArn}/*`]
+      : ['arn:aws:s3:::*'],
+  });
+  statements.push({
+    Sid:      'TerraformStateLock',
+    Effect:   'Allow',
+    Action:   ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem'],
+    Resource: opts.lockTableArn ?? '*',
+  });
+
+  // ── IAM (included by default — almost all Terraform creates IAM resources) ─
+  if (opts.includeIam !== false) {
+    statements.push({
+      Sid:    'IamManagement',
+      Effect: 'Allow',
+      Action: [
+        'iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:UpdateRole',
+        'iam:UpdateAssumeRolePolicy',
+        'iam:AttachRolePolicy', 'iam:DetachRolePolicy',
+        'iam:PutRolePolicy', 'iam:DeleteRolePolicy', 'iam:GetRolePolicy',
+        'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies',
+        'iam:PassRole',
+        'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:GetPolicy',
+        'iam:GetPolicyVersion', 'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion',
+        'iam:ListPolicyVersions', 'iam:ListEntitiesForPolicy',
+        'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile',
+        'iam:GetInstanceProfile', 'iam:AddRoleToInstanceProfile',
+        'iam:RemoveRoleFromInstanceProfile',
+        'iam:TagRole', 'iam:UntagRole', 'iam:TagPolicy', 'iam:UntagPolicy',
+        'iam:ListRoleTags', 'iam:ListPolicyTags',
+      ],
+      Resource: '*',
+    });
+  }
+
+  // ── Per-service statements ────────────────────────────────────────────────
+  const remaining = services.filter(s => !['s3', 'iam', 'dynamodb'].includes(s));
+  if (remaining.length > 0) {
+    statements.push({
+      Sid:      'DetectedServices',
+      Effect:   'Allow',
+      Action:   remaining.map(s => `${s}:*`),
+      Resource: '*',
+    });
+  }
+
+  return { Version: '2012-10-17', Statement: statements };
+}
+
+/**
+ * Scans a list of Terraform file contents and returns the unique set of IAM
+ * service prefixes corresponding to the `resource "aws_*"` types found.
+ */
+export function scanTfForServices(fileContents: string[]): string[] {
+  const seen = new Set<string>();
+  for (const content of fileContents) {
+    for (const m of content.matchAll(/resource\s+"aws_([a-z][a-z0-9]*)(?:_[^"]*)?"\s/g)) {
+      const segment = m[1];
+      const svc = TF_SEGMENT_TO_IAM[segment] ?? segment;
+      seen.add(svc);
+    }
+  }
+  return [...seen];
+}
+
+export interface HubSpokeOidcInputs {
+  /** 12-digit AWS account ID for the hub (CI/CD) account. */
+  hubAccountId: string;
+  /** GitHub org/owner whose Actions runners authenticate to the hub role. */
+  githubOrg: string;
+  /** Optional repo name — omit to allow any repo in the org. */
+  repo?: string;
+  /** Name for the hub IAM role. Default: `github-actions-hub`. */
+  hubRoleName?: string;
+  /** Name for each spoke deployment role. Default: `terraform-deployment`. */
+  spokeRoleName?: string;
+  /** OIDC provider host. Default: `token.actions.githubusercontent.com`. */
+  oidcProvider?: string;
+  /**
+   * One entry per workload environment.
+   * `accountId` is the 12-digit AWS account ID; `name` is used only for comments.
+   */
+  spokeAccounts: Array<{ name: string; accountId: string }>;
+  /**
+   * Inline IAM policy JSON string to attach to each spoke deployment role.
+   * Generate via `suggestSpokeIamPolicy()` — do not default to AdministratorAccess.
+   */
+  inlinePolicy: string;
+}
+
+/**
+ * Generates two Terraform files for a hub-and-spoke AWS multi-account OIDC setup:
+ *  - `hub.tf`   — apply in the CI/CD (hub) account; creates the OIDC provider,
+ *                 hub IAM role (trusted by GHA), and an inline policy granting
+ *                 `sts:AssumeRole` into every spoke.
+ *  - `spoke.tf` — apply once per workload account; creates a deployment role
+ *                 that trusts only the hub role (not GitHub Actions directly).
+ *
+ * Returns `{ hubTf, spokeTf }`.
+ */
+export function hubSpokeOidcTf(inputs: HubSpokeOidcInputs): { hubTf: string; spokeTf: string } {
+  const provider   = inputs.oidcProvider ?? 'token.actions.githubusercontent.com';
+  const hubRole    = inputs.hubRoleName   ?? 'github-actions-hub';
+  const spokeRole  = inputs.spokeRoleName ?? 'terraform-deployment';
+  const repoSub    = inputs.repo
+    ? `repo:${inputs.githubOrg}/${inputs.repo}:*`
+    : `repo:${inputs.githubOrg}/*:*`;
+  const spokeArns  = inputs.spokeAccounts
+    .map(s => `      "arn:aws:iam::${s.accountId}:role/${spokeRole}",`)
+    .join('\n');
+  const spokeBlocks = inputs.spokeAccounts.map(s => `
+# ── Spoke: ${s.name} (${s.accountId}) ──────────────────────────────────────────
+# Apply this block inside account ${s.accountId} using an admin bootstrap role.
+resource "aws_iam_role" "terraform_deployment_${s.name.replace(/[^A-Za-z0-9]/g, '_')}" {
+  name = "${spokeRole}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { AWS = "arn:aws:iam::${inputs.hubAccountId}:role/${hubRole}" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "terraform_deployment_${s.name.replace(/[^A-Za-z0-9]/g, '_')}" {
+  name   = "${spokeRole}-least-privilege"
+  role   = aws_iam_role.terraform_deployment_${s.name.replace(/[^A-Za-z0-9]/g, '_')}.id
+  policy = <<-EOT
+${inputs.inlinePolicy}
+EOT
+}`).join('\n');
+
+  const hubTf = `# Generated by Terraform Workspace VS Code Extension
+# Apply this file in your HUB (CI/CD) account: ${inputs.hubAccountId}
+#
+# Hub-and-spoke OIDC pattern:
+#   GitHub Actions  →  (OIDC)  →  ${hubRole} (hub)
+#                                      ↓ sts:AssumeRole
+#                              terraform-deployment (each spoke)
+#
+# After applying, set aws-auth action's role-to-assume to:
+#   arn:aws:iam::${inputs.hubAccountId}:role/${hubRole}
+# and add a role-chaining step per environment to assume the spoke role.
+
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+  }
+}
+
+# ── OIDC provider ─────────────────────────────────────────────────────────────
+# Remove this resource if your hub account already has the OIDC provider registered.
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url            = "https://${provider}"
+  client_id_list = ["sts.amazonaws.com"]
+  # Thumbprint for token.actions.githubusercontent.com (rotated infrequently by GitHub).
+  # For GHE Server, retrieve via: openssl s_client -connect <host>:443 2>/dev/null | openssl x509 -fingerprint -noout -sha1
+  thumbprint_list = ["1b511abead59c6ce207077c0bf0e0043b1382612"]
+}
+
+# ── Hub IAM role ──────────────────────────────────────────────────────────────
+resource "aws_iam_role" "hub" {
+  name        = "${hubRole}"
+  description = "Assumed by GitHub Actions via OIDC; chains into spoke deployment roles."
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = { "${provider}:aud" = "sts.amazonaws.com" }
+        StringLike   = { "${provider}:sub" = "${repoSub}" }
+      }
+    }]
+  })
+}
+
+# ── Hub inline policy: allow assuming all spoke deployment roles ───────────────
+resource "aws_iam_role_policy" "hub_assume_spokes" {
+  name = "assume-spoke-deployment-roles"
+  role = aws_iam_role.hub.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "sts:AssumeRole"
+      Resource = [
+${spokeArns}
+      ]
+    }]
+  })
+}
+
+output "hub_role_arn" {
+  description = "ARN of the hub IAM role — use as role-to-assume in your aws-auth action step."
+  value       = aws_iam_role.hub.arn
+}
+`;
+
+  const spokeTf = `# Generated by Terraform Workspace VS Code Extension
+# Apply each spoke block in the corresponding workload account using an admin bootstrap role.
+#
+# Each spoke role:
+#   - Trusts ONLY the hub role (not GitHub Actions directly — no OIDC provider needed in workload accounts)
+#   - Has Terraform deployment permissions (least-privilege inline policy generated by terraform_suggest_spoke_iam_policy)
+#
+# Workflow integration (add this step to your generated GHA workflow per environment):
+#
+#   - name: "Assume spoke role (<env>)"
+#     run: |
+#       CREDS=$(aws sts assume-role \\
+#         --role-arn "arn:aws:iam::<spokeAccountId>:role/${spokeRole}" \\
+#         --role-session-name "github-actions-\${{ github.run_id }}" \\
+#         --query Credentials --output json)
+#       echo "AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r .AccessKeyId)"        >> $GITHUB_ENV
+#       echo "AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r .SecretAccessKey)" >> $GITHUB_ENV
+#       echo "AWS_SESSION_TOKEN=$(echo $CREDS | jq -r .SessionToken)"        >> $GITHUB_ENV
+#     shell: bash
+
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+  }
+}
+${spokeBlocks}
+`;
+
+  return { hubTf, spokeTf };
+}
+
 // ─── CodeBuild executor (Pattern A: dispatched via aws codebuild start-build) ─
 
 export interface CodeBuildExecutorInputs {

@@ -20,6 +20,7 @@ import {
   ScaffoldFromTemplateInputSchema,
   ScaffoldModuleRepoInputSchema,
   LookupProviderDocInputSchema,
+  LookupAwsSkillInputSchema,
   ScaffoldCodebuildExecutorInputSchema,
   DispatchCodebuildRunInputSchema,
   ScaffoldLambdaImageInputSchema,
@@ -40,6 +41,8 @@ import {
   RunnerForceRedeployInputSchema,
   RunnerScaleInputSchema,
   RunnerGetLogsInputSchema,
+  ScaffoldHubSpokeOidcInputSchema,
+  SuggestSpokeIamPolicyInputSchema,
 } from '../../src/schemas/toolInputs.js';
 import type { CompiledSchema } from '../../src/schemas/defineSchema.js';
 
@@ -70,8 +73,11 @@ const TOOL_SCHEMAS: Record<string, CompiledSchema<unknown>> = {
   terraform_scaffold_from_template: ScaffoldFromTemplateInputSchema as CompiledSchema<unknown>,
   terraform_scaffold_module_repo: ScaffoldModuleRepoInputSchema as CompiledSchema<unknown>,
   terraform_lookup_provider_doc: LookupProviderDocInputSchema as CompiledSchema<unknown>,
+  terraform_lookup_aws_skill: LookupAwsSkillInputSchema as CompiledSchema<unknown>,
   terraform_scaffold_codebuild_executor: ScaffoldCodebuildExecutorInputSchema as CompiledSchema<unknown>,
   terraform_dispatch_codebuild_run: DispatchCodebuildRunInputSchema as CompiledSchema<unknown>,
+  terraform_scaffold_hub_spoke_oidc: ScaffoldHubSpokeOidcInputSchema as CompiledSchema<unknown>,
+  terraform_suggest_spoke_iam_policy: SuggestSpokeIamPolicyInputSchema as CompiledSchema<unknown>,
   terraform_scaffold_lambda_image: ScaffoldLambdaImageInputSchema as CompiledSchema<unknown>,
   terraform_build_lambda_image: BuildLambdaImageInputSchema as CompiledSchema<unknown>,
   terraform_scaffold_sc_product: ScaffoldScProductInputSchema as CompiledSchema<unknown>,

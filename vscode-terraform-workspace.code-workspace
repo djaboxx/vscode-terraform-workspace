@@ -1,0 +1,37 @@
+{
+	"folders": [
+		{
+			"name": "vscode-terraform-workspace",
+			"path": "."
+		},
+		{
+			"name": "terraform-tfc-pipeline",
+			"path": "../terraform-tfc-pipeline"
+		},
+		{
+			"name": "terraform-tfe-module",
+			"path": "../terraform-tfe-module"
+		},
+		{
+			"name": "terraform-tfe-team",
+			"path": "../terraform-tfe-team"
+		},
+		{
+			"name": "terraform-tfe-token",
+			"path": "../terraform-tfe-token"
+		},
+		{
+			"name": "terraform-tfe-workspace",
+			"path": "../terraform-tfe-workspace"
+		},
+		{
+			"path": "../agent-toolkit-for-aws"
+		},
+		{
+			"path": "../s3-download"
+		},
+		{
+			"path": "../s3-upload"
+		}
+	]
+}

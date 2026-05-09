@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { TfRun, RunStatus, RunConclusion, RunType } from '../types/index.js';
 import { GithubAuthProvider } from '../auth/GithubAuthProvider.js';
 
@@ -323,5 +326,126 @@ export class GithubActionsClient {
 
   private headers(token: string): Record<string, string> {
     return { ...this.auth.ghHeaders(token), 'Content-Type': 'application/json' };
+  }
+
+  // ── Plan-output helpers ───────────────────────────────────────────────────
+
+  /**
+   * Tries to retrieve `plan.txt` for a completed workflow run.
+   *
+   * Strategy (in order):
+   *  1. Look for an artifact named `terraform-plan-<env>` (uploaded by the
+   *     CodeBuild-dispatching GHA step via `actions/upload-artifact@v4`).
+   *  2. Fall back to scanning the raw run-logs zip for a step whose name
+   *     contains "Terraform Plan" and extracting the log text.
+   *
+   * Returns `undefined` if neither source yields usable text.
+   */
+  async fetchPlanText(
+    owner: string,
+    repo: string,
+    runId: number,
+    envName: string,
+    cacheBucket?: string,
+  ): Promise<string | undefined> {
+    // ── Strategy 1: S3 plan-output (uploaded by terraform-plan action) ────
+    // Key: plan-output/<runId>/plan.stdout — deterministic, survives cache cleanup.
+    if (cacheBucket) {
+      const fromS3 = await this.fetchPlanFromS3(cacheBucket, runId);
+      if (fromS3) return fromS3;
+    }
+
+    // ── Strategy 2: raw log zip ────────────────────────────────────────────
+    return this.fetchPlanFromLogs(owner, repo, runId);
+  }
+
+  /**
+   * Downloads `plan-output/<runId>/plan.stdout` from the cache S3 bucket using
+   * the local `aws` CLI (same credential chain the runner uses). This is the
+   * primary strategy when `cacheBucket` is known — it does not require the GHA
+   * Artifact service, which is unavailable in some enterprise environments.
+   */
+  private async fetchPlanFromS3(
+    cacheBucket: string,
+    runId: number,
+  ): Promise<string | undefined> {
+    const dest = path.join(os.tmpdir(), `tfplan-${runId}.txt`);
+    const s3Uri = `s3://${cacheBucket}/plan-output/${runId}/plan.stdout`;
+    const ok = await new Promise<boolean>(resolve => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { spawn } = require('child_process') as typeof import('child_process');
+      const child = spawn('aws', ['s3', 'cp', s3Uri, dest], {
+        env: process.env,
+        stdio: 'ignore',
+      });
+      child.on('close', (code: number | null) => resolve(code === 0));
+      child.on('error', () => resolve(false));
+    });
+    if (!ok) return undefined;
+    try {
+      const text = await fs.readFile(dest, 'utf-8');
+      await fs.unlink(dest).catch(() => {/* best-effort cleanup */});
+      return text;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Downloads the run-logs zip and searches for a log file whose path
+   * contains "Terraform Plan" (the step name from the generated workflows).
+   * Returns the first match, stripping GitHub's `YYYY-MM-DDTHH:MM:SSZ ` timestamp prefix.
+   */
+  private async fetchPlanFromLogs(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<string | undefined> {
+    const token = await this.auth.getToken();
+    if (!token) return undefined;
+
+    const resp = await this.auth.fetch(
+      `${this.auth.apiBaseUrl}/repos/${owner}/${repo}/actions/runs/${runId}/logs`,
+      { headers: this.headers(token), redirect: 'follow' },
+    );
+    if (!resp.ok && resp.status !== 302) return undefined;
+
+    // When redirect:'follow' the response body is the zip.
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length === 0) return undefined;
+
+    // Find the step log file whose name contains "Terraform_Plan" or "Terraform Plan".
+    return this.extractFileFromZip(buf, null, /terraform.?plan/i);
+  }
+
+  /**
+   * Extracts a file from a zip buffer using jszip (already a transitive dep).
+   * Pass `fileName` for an exact match, or `namePattern` for a regex search.
+   * Strips GitHub's `YYYY-MM-DDTHH:MM:SSZ ` log-line prefix when present.
+   */
+  private async extractFileFromZip(
+    buf: Buffer,
+    fileName: string | null,
+    namePattern?: RegExp,
+  ): Promise<string | undefined> {
+    try {
+      // jszip is an existing dep — import lazily to keep activation fast.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const JSZip = (require('jszip') as { default: new () => import('jszip') }).default ?? require('jszip');
+      const zip = await (new JSZip()).loadAsync(buf);
+      const entry = Object.values(zip.files).find(f => {
+        if (f.dir) return false;
+        if (fileName) return f.name.endsWith(fileName);
+        if (namePattern) return namePattern.test(f.name);
+        return false;
+      });
+      if (!entry) return undefined;
+
+      const raw = await entry.async('string');
+      // Strip GHA log timestamps: "2024-01-15T12:34:56.7890000Z "
+      return raw.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z /gm, '').trimEnd();
+    } catch {
+      return undefined;
+    }
   }
 }

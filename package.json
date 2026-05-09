@@ -281,12 +281,11 @@
       {
         "name": "terraform_set_variable",
         "displayName": "Set Terraform Variable",
-        "modelDescription": "Sets a GitHub Actions variable or secret in the specified scope. Sensitive values are stored as encrypted secrets.",
+        "modelDescription": "Sets a GitHub Actions variable or secret in the specified scope. Sensitive values are stored as encrypted secrets. If the value is sensitive, omit the `value` parameter so the user is prompted securely via an on-device native input box.",
         "inputSchema": {
           "type": "object",
           "required": [
             "key",
-            "value",
             "sensitive"
           ],
           "properties": {
@@ -890,6 +889,35 @@
         }
       },
       {
+        "name": "terraform_lookup_aws_skill",
+        "displayName": "Lookup AWS Agent Toolkit Skill",
+        "modelDescription": "Fetches curated AWS best-practice guidance from the official aws/agent-toolkit-for-aws repository. Use `list` to see all available skills grouped by category (IAM, Lambda/serverless, ECS containers, S3, VPC networking, observability, Secrets Manager, etc.). Use `read` with a skill name (e.g. `aws-iam`, `aws-serverless`, `aws-containers`, `aws-observability`, `securing-s3-buckets`, `creating-secrets-using-best-practices`) to load the full guidance document. Skills contain verified AWS edge cases, API gotchas, and architecture patterns that complement Terraform provider docs. Call this when the user asks about AWS service behaviour, IAM policy generation, Lambda configuration, ECS scaling, CloudWatch alarms, or S3 security — before guessing from training data.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "operation"
+          ],
+          "properties": {
+            "operation": {
+              "type": "string",
+              "enum": [
+                "list",
+                "read"
+              ],
+              "description": "`list` returns the full catalog of available skill names grouped by category. `read` fetches the content of a named skill."
+            },
+            "skill": {
+              "type": "string",
+              "description": "Kebab-case skill name, e.g. `aws-iam`, `aws-serverless`, `aws-containers`. Required for `read`. Use `list` first to discover available names."
+            },
+            "file": {
+              "type": "string",
+              "description": "Path to a file within the skill directory. Defaults to `SKILL.md`. For skills with reference sub-files use e.g. `references/lambda.md`."
+            }
+          }
+        }
+      },
+      {
         "name": "terraform_scaffold_codebuild_executor",
         "displayName": "Scaffold CodeBuild Executor (Terraform module)",
         "modelDescription": "Generates a Terraform module under `infra/codebuild-executor-<projectName>/` that provisions an AWS CodeBuild project + S3 source bucket + IAM role used as the dispatched terraform executor (same shape as djaboxx/packer-pipeline). After the user runs `terraform apply` on the module, they should set `executor: 'codebuild'` and `codebuild: { project, sourceBucket, region }` in `.vscode/terraform-workspace.json` so generated workflows (and the local `terraform_dispatch_codebuild_run` tool) use it. Use this when the user is on GHE Server, has no OIDC, or otherwise wants the heavy terraform work to run in CodeBuild rather than on the GHA runner.",
@@ -988,6 +1016,86 @@
             "workspace": {
               "type": "string",
               "description": "Workspace/environment name to run against (must exist in workspace config)."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_suggest_spoke_iam_policy",
+        "displayName": "Suggest least-privilege spoke IAM policy",
+        "modelDescription": "Scans the current workspace .tf files to detect which AWS services Terraform manages, then generates a minimal inline IAM policy JSON covering those services plus Terraform state backend (S3 + DynamoDB). Always includes IAM management permissions unless includeIam is false. Falls back to service:* for any service not in the static action map. Call this tool BEFORE terraform_scaffold_hub_spoke_oidc — pass its JSON output as the inlinePolicy parameter. If the workspace uses modules that manage additional services not visible in .tf files, provide those service prefixes explicitly via the services parameter.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "services": {
+              "type": "array",
+              "description": "Explicit list of AWS IAM service prefixes (e.g. [\"s3\", \"lambda\"]). Omit to auto-detect from workspace .tf files.",
+              "items": { "type": "string" }
+            },
+            "includeIam": {
+              "type": "boolean",
+              "description": "Include IAM management permissions. Default: true."
+            },
+            "stateBucketArn": {
+              "type": "string",
+              "description": "ARN of the S3 state bucket (scopes S3 permissions). Omit to allow on *."
+            },
+            "lockTableArn": {
+              "type": "string",
+              "description": "ARN of the DynamoDB lock table. Omit to allow on *."
+            }
+          }
+        }
+      },
+      {
+        "name": "terraform_scaffold_hub_spoke_oidc",
+        "displayName": "Scaffold Hub-and-Spoke OIDC (multi-account)",
+        "modelDescription": "Writes infra/hub-spoke-oidc/hub.tf and spoke.tf to the workspace after user confirmation. hub.tf (applied in the CI/CD hub account) creates the GitHub Actions OIDC provider, a hub IAM role trusted by GHA, and an inline sts:AssumeRole policy into every spoke. spoke.tf (applied once per workload account) creates a deployment role that trusts only the hub role ARN — no OIDC provider needed in workload accounts. IMPORTANT: You MUST call terraform_suggest_spoke_iam_policy first and pass its JSON output as inlinePolicy — this tool will reject calls that omit inlinePolicy.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["hubAccountId", "githubOrg", "spokeAccounts", "inlinePolicy"],
+          "properties": {
+            "hubAccountId": {
+              "type": "string",
+              "description": "12-digit AWS account ID for the hub (CI/CD) account.",
+              "pattern": "^\\d{12}$"
+            },
+            "githubOrg": {
+              "type": "string",
+              "description": "GitHub org/owner whose Actions runners authenticate to the hub role."
+            },
+            "repo": {
+              "type": "string",
+              "description": "Optional repo name — omit to allow any repo in the org."
+            },
+            "hubRoleName": {
+              "type": "string",
+              "description": "Name for the hub IAM role. Default: github-actions-hub."
+            },
+            "spokeRoleName": {
+              "type": "string",
+              "description": "Name for each spoke deployment role. Default: terraform-deployment."
+            },
+            "oidcProvider": {
+              "type": "string",
+              "description": "OIDC provider host override. Default: token.actions.githubusercontent.com (or GHE equivalent)."
+            },
+            "spokeAccounts": {
+              "type": "array",
+              "minItems": 1,
+              "description": "One entry per workload environment.",
+              "items": {
+                "type": "object",
+                "required": ["name", "accountId"],
+                "properties": {
+                  "name": { "type": "string", "description": "Environment/account label (e.g. dev, staging, prod)." },
+                  "accountId": { "type": "string", "description": "12-digit AWS account ID.", "pattern": "^\\d{12}$" }
+                }
+              }
+            },
+            "inlinePolicy": {
+              "type": "string",
+              "description": "Inline IAM policy JSON string from terraform_suggest_spoke_iam_policy. Must be valid JSON."
             }
           }
         }
@@ -2472,5 +2580,8 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "libsodium-wrappers": "^0.8.4"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.5.0"
   }
 }

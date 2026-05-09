@@ -77,6 +77,18 @@ if it's likely to recur, but do not implement it.
   prompts. Strip `\r\n` at minimum. See `DaveChatParticipant.handleAI()`.
 - **Never use `await import(...)` on activation paths.** Use static imports.
 
+## AWS engineering practices
+
+When writing code or Terraform that interacts with AWS services:
+
+- **IAM**: Prefer least-privilege inline policies; avoid `*` actions/resources in production. Use `aws_iam_role` with `assume_role_policy` for service trust, not access keys. For precise IAM edge cases (STS limits, Organizations quirks, policy evaluation order), call `terraform_lookup_aws_skill` with `skill: "aws-iam"` before guessing.
+- **Lambda/serverless**: Set explicit `timeout`, `memory_size`, and `reserved_concurrent_executions`. Avoid infinite retries on async invocations without a DLQ. For cold-start tuning, event-source mappings, and SnapStart guidance call `terraform_lookup_aws_skill` with `skill: "aws-serverless"`.
+- **ECS/containers (GHE runners)**: Pin task definition revisions in Terraform; avoid `LATEST`. Use `aws_ecs_service` with `force_new_deployment = true` for runner redeployments. See `skill: "aws-containers"` for scaling patterns.
+- **S3**: Enable versioning and server-side encryption on all state buckets. Block public access at the bucket level. See `skill: "securing-s3-buckets"`.
+- **Secrets Manager**: Prefer `aws_secretsmanager_secret` with rotation over SSM Parameter Store for credentials. See `skill: "creating-secrets-using-best-practices"`.
+- **CloudWatch**: Always pair `aws_lambda_function` scaffolding with a log group (`aws_cloudwatch_log_group`) with a retention policy. See `skill: "aws-observability"`.
+- **When uncertain**: call `terraform_lookup_aws_skill` with `operation: "list"` to see all 43 available AWS skills, then `read` the relevant one. Prefer verified skill content over training-data assumptions for API parameters, quotas, and error codes.
+
 ## Self-improvement loop
 
 The `terraform_self_introspect` LM tool gives the extension's own chat

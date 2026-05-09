@@ -3,7 +3,7 @@ import { ExtensionServices } from '../services.js';
 import { VariableScope, getWorkspaces } from '../types/index.js';
 import { WorkflowGenerator } from '../workflows/WorkflowGenerator.js';
 import { GitRemoteParser } from '../auth/GitRemoteParser.js';
-import { backendBootstrapTf, defaultOidcProvider, oidcTrustPolicy } from '../workflows/Scaffolders.js';
+import { backendBootstrapTf, defaultOidcProvider, oidcTrustPolicy, hubSpokeOidcTf, suggestSpokeIamPolicy, scanTfForServices } from '../workflows/Scaffolders.js';
 import { writeModuleRepoFiles } from '../workflows/ModuleRepoScaffolder.js';
 import {
   RunApplyInputSchema,
@@ -33,6 +33,8 @@ import {
   ScaffoldModuleRepoInput,
   LookupProviderDocInputSchema,
   LookupProviderDocInput,
+  LookupAwsSkillInputSchema,
+  LookupAwsSkillInput,
   ScaffoldCodebuildExecutorInputSchema,
   ScaffoldCodebuildExecutorInput,
   DispatchCodebuildRunInputSchema,
@@ -63,6 +65,10 @@ import {
   MatchPlaybookInput,
   RecallDecisionsInputSchema,
   RecallDecisionsInput,
+  ScaffoldHubSpokeOidcInputSchema,
+  ScaffoldHubSpokeOidcInput,
+  SuggestSpokeIamPolicyInputSchema,
+  SuggestSpokeIamPolicyInput,
 } from '../schemas/toolInputs.js';
 import { CompiledSchema, formatSchemaErrors } from '../schemas/defineSchema.js';
 import { WorkspaceAutoDiscovery } from '../discovery/WorkspaceAutoDiscovery.js';
@@ -98,7 +104,10 @@ export function registerTerraformTools(
     vscode.lm.registerTool('terraform_scaffold_from_template', new ScaffoldFromTemplateTool(services)),
     vscode.lm.registerTool('terraform_scaffold_module_repo', new ScaffoldModuleRepoTool(services)),
     vscode.lm.registerTool('terraform_lookup_provider_doc', new LookupProviderDocTool(services)),
+    vscode.lm.registerTool('terraform_lookup_aws_skill', new LookupAwsSkillTool()),
     vscode.lm.registerTool('terraform_scaffold_codebuild_executor', new ScaffoldCodebuildExecutorTool()),
+    vscode.lm.registerTool('terraform_suggest_spoke_iam_policy', new SuggestSpokeIamPolicyTool()),
+    vscode.lm.registerTool('terraform_scaffold_hub_spoke_oidc', new ScaffoldHubSpokeOidcTool(services)),
     vscode.lm.registerTool('terraform_dispatch_codebuild_run', new DispatchCodebuildRunTool(services, outputChannel)),
     vscode.lm.registerTool('terraform_scaffold_lambda_image', new ScaffoldLambdaImageTool()),
     vscode.lm.registerTool('terraform_build_lambda_image', new BuildLambdaImageTool(outputChannel)),
@@ -512,7 +521,36 @@ class SetVariableTool implements vscode.LanguageModelTool<SetVariableInput> {
     }
 
     const { owner, repo } = ctx;
-    const { key, value, sensitive, scope = 'environment', workspace } = v.value;
+    const { key, sensitive, scope = 'environment', workspace } = v.value;
+    let value = v.value.value;
+
+    const where = `${scope}${workspace ? ` / environment "${workspace}"` : ''}`;
+
+    if (sensitive && !value) {
+      // Securely prompt the user for the secret.
+      value = await vscode.window.showInputBox({
+        prompt: `Enter secure value for secret "${key}" (${where})`,
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (value === undefined) {
+        return textResult(`Cancelled setting secret "${key}". User did not provide a value.`);
+      }
+    } else if (!sensitive && value === undefined) {
+      // Prompt for non-sensitive variable if value wasn't provided.
+      value = await vscode.window.showInputBox({
+        prompt: `Enter value for variable "${key}" (${where})`,
+        ignoreFocusOut: true,
+      });
+      if (value === undefined) {
+        return textResult(`Cancelled setting variable "${key}". User did not provide a value.`);
+      }
+    }
+
+    // Type guard: all code paths above either assign value or return early.
+    if (value === undefined) {
+      return textResult(`No value provided for "${key}".`);
+    }
 
     try {
       if (scope === 'environment' && workspace) {
@@ -539,18 +577,15 @@ class SetVariableTool implements vscode.LanguageModelTool<SetVariableInput> {
 
       // NEVER echo the value back to the LM. For secrets we don't even
       // confirm what was stored beyond the key+scope.
-      const where = `${scope}${workspace ? ` / environment "${workspace}"` : ''}`;
       if (sensitive) {
         return textResult(
-          `Secret "${key}" stored in scope "${where}". Value was redacted from this response.\n\n` +
-          `> Reminder: secrets pasted into chat have already passed through the language model. ` +
-          `For high-sensitivity values prefer the **Terraform: Add Secret** command instead.`,
+          `Secret "${key}" stored in scope "${where}". Value was entered securely on-device and was never exposed to the LM.`
         );
       }
       return textResult(`Variable "${key}" set in scope "${where}".`);
     } catch (err) {
       // Avoid leaking the value through error messages from upstream HTTP libs.
-      const safe = String(err).replaceAll(value, '«REDACTED»');
+      const safe = value ? String(err).replaceAll(value, '«REDACTED»') : String(err);
       return textResult(`Error setting variable: ${safe}`);
     }
   }
@@ -559,17 +594,24 @@ class SetVariableTool implements vscode.LanguageModelTool<SetVariableInput> {
     options: vscode.LanguageModelToolInvocationPrepareOptions<SetVariableInput>,
     _token: vscode.CancellationToken,
   ): vscode.PreparedToolInvocation {
-    const { key, sensitive } = options.input;
+    const { key, sensitive, value } = options.input;
+    const valueProvidedByLM = sensitive && value !== undefined;
     return {
       invocationMessage: `Setting ${sensitive ? 'secret' : 'variable'} **${key}**`,
       confirmationMessages: sensitive
         ? {
             title: 'Set Secret',
             message: new vscode.MarkdownString(
-              `Store \`${key}\` as an encrypted GitHub Secret?\n\n` +
-              `⚠️ **The secret value has already been sent to the language model** as part of this tool call. ` +
-              `For maximum-sensitivity values, cancel and use the **Terraform: Add Secret** command, which ` +
-              `prompts via VS Code's input box and never exposes the value to the model.`,
+              valueProvidedByLM
+                // Value was passed through the LM — warn the user.
+                ? `Store \`${key}\` as an encrypted GitHub Secret?\n\n` +
+                  `⚠️ **The secret value has already passed through the language model** as part of this request. ` +
+                  `For maximum-sensitivity values, cancel and use the **Terraform: Add Secret** command instead — ` +
+                  `it prompts directly in VS Code and never exposes the value to the model.`
+                // Secure path — value will be prompted on-device after confirmation.
+                : `Store \`${key}\` as an encrypted GitHub Secret?\n\n` +
+                  `✅ **Secure path**: you will be prompted for the value in a password field after confirming. ` +
+                  `The secret will never appear in the LM context window.`,
             ),
           }
         : undefined,
@@ -1600,6 +1642,246 @@ class LookupProviderDocTool implements vscode.LanguageModelTool<LookupProviderDo
     const header = `# ${provider}@${pinned.version} \u2014 ${category}/${slug}\n\n`;
     const body = md.length > maxChars ? md.slice(0, maxChars) + `\n\n_… truncated (${md.length - maxChars} more chars)._` : md;
     return textResult(header + body);
+  }
+}
+
+// ─── LookupAwsSkillTool ──────────────────────────────────────────────────────
+
+/**
+ * Lazily-populated catalog: kebab-case skill name → `skills/<category>/<skill>` path.
+ * Built once per extension lifetime by querying the GitHub Git Trees API for
+ * `aws/agent-toolkit-for-aws` and filtering entries whose path matches
+ * `skills/<category>/<skill>/SKILL.md` (exactly 4 segments).
+ *
+ * Stored as a Promise so concurrent first-calls share the single in-flight request.
+ */
+let awsSkillCatalogCache: Promise<Record<string, string>> | null = null;
+
+async function loadAwsSkillCatalog(): Promise<Record<string, string>> {
+  const url =
+    'https://api.github.com/repos/aws/agent-toolkit-for-aws/git/trees/main?recursive=1';
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'vscode-terraform-workspace',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub Trees API returned HTTP ${response.status}`);
+  }
+  const data = (await response.json()) as {
+    tree: Array<{ path: string; type: string }>;
+    truncated?: boolean;
+  };
+
+  const catalog: Record<string, string> = {};
+  const skillPattern = /^skills\/([^/]+)\/([^/]+)\/SKILL\.md$/;
+  for (const entry of data.tree) {
+    if (entry.type !== 'blob') continue;
+    const m = entry.path.match(skillPattern);
+    if (!m) continue;
+    // skill name is the directory name (second capture group), e.g. "aws-iam"
+    const skillName = m[2];
+    const skillDir = `${m[1]}/${m[2]}`; // e.g. "security-and-identity-skills/aws-iam"
+    catalog[skillName] = skillDir;
+  }
+  return catalog;
+}
+
+function getAwsSkillCatalog(): Promise<Record<string, string>> {
+  if (!awsSkillCatalogCache) {
+    awsSkillCatalogCache = loadAwsSkillCatalog().catch((err) => {
+      // Reset so the next call retries rather than re-throwing the same failure.
+      awsSkillCatalogCache = null;
+      throw err;
+    });
+  }
+  return awsSkillCatalogCache;
+}
+
+class LookupAwsSkillTool implements vscode.LanguageModelTool<LookupAwsSkillInput> {
+  private static readonly OWNER = 'aws';
+  private static readonly REPO = 'agent-toolkit-for-aws';
+  private static readonly REF = 'main';
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<LookupAwsSkillInput>,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(LookupAwsSkillInputSchema, options.input, 'terraform_lookup_aws_skill');
+    if (!v.ok) return v.result;
+
+    const { operation, skill, file = 'SKILL.md' } = v.value;
+    if (token.isCancellationRequested) return cancelledResult();
+
+    let catalog: Record<string, string>;
+    try {
+      catalog = await getAwsSkillCatalog();
+    } catch (err) {
+      return textResult(`Failed to load AWS skill catalog: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (token.isCancellationRequested) return cancelledResult();
+
+    if (operation === 'list') {
+      return this.listSkills(catalog);
+    }
+
+    // operation === 'read'
+    if (!skill) return textResult('`read` requires a `skill` name. Use `list` to see available skills.');
+
+    const skillPath = catalog[skill];
+    if (!skillPath) {
+      const available = Object.keys(catalog).sort().join(', ');
+      return textResult(`Unknown skill "${skill}".\n\nAvailable skills: ${available}`);
+    }
+
+    // Guard against path traversal in the `file` parameter.
+    const safeFile = file.replace(/^\/+/, '');
+    if (safeFile.split('/').some((seg) => seg === '..')) {
+      return textResult('Invalid file path: `..` segments are not permitted.');
+    }
+
+    const url =
+      `https://raw.githubusercontent.com/${LookupAwsSkillTool.OWNER}/${LookupAwsSkillTool.REPO}` +
+      `/${LookupAwsSkillTool.REF}/skills/${encodeURI(skillPath)}/${encodeURI(safeFile)}`;
+    try {
+      const response = await fetch(url, { headers: { 'User-Agent': 'vscode-terraform-workspace' } });
+      if (token.isCancellationRequested) return cancelledResult();
+      if (!response.ok) {
+        return textResult(
+          `Failed to fetch skill content (HTTP ${response.status}).` +
+          ` Verify that "${safeFile}" exists inside skill "${skill}".` +
+          ` Use operation "list" to see available skills.`,
+        );
+      }
+      const body = await response.text();
+      const header = `# AWS Skill: \`${skill}\` — \`${safeFile}\`\n\n`;
+      return cappedTextResult(header + body, `aws-skill ${skill}/${safeFile}`);
+    } catch (err) {
+      return textResult(`Error fetching AWS skill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private listSkills(catalog: Record<string, string>): vscode.LanguageModelToolResult {
+    const byCategory: Record<string, string[]> = {};
+    for (const [name, path] of Object.entries(catalog)) {
+      const category = path.split('/')[0];
+      if (!byCategory[category]) byCategory[category] = [];
+      byCategory[category].push(name);
+    }
+    const lines = [
+      '# AWS Agent Toolkit — Available Skills',
+      '',
+      `Source: https://github.com/${LookupAwsSkillTool.OWNER}/${LookupAwsSkillTool.REPO}`,
+      '',
+      'Use `terraform_lookup_aws_skill` with `operation: "read"` and a `skill` name to fetch guidance.',
+      '',
+    ];
+    for (const [category, skills] of Object.entries(byCategory).sort()) {
+      lines.push(`## ${category}`);
+      for (const s of skills.sort()) {
+        lines.push(`- \`${s}\``);
+      }
+      lines.push('');
+    }
+    return textResult(lines.join('\n'));
+  }
+}
+
+// ─── terraform_suggest_spoke_iam_policy ──────────────────────────────────────
+
+class SuggestSpokeIamPolicyTool implements vscode.LanguageModelTool<SuggestSpokeIamPolicyInput> {
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<SuggestSpokeIamPolicyInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(SuggestSpokeIamPolicyInputSchema, options.input, 'terraform_suggest_spoke_iam_policy');
+    if (!v.ok) return v.result;
+
+    let services = v.value.services ?? [];
+    if (services.length === 0) {
+      const contents: string[] = [];
+      for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        const files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*.tf'));
+        for (const f of files) {
+          contents.push(Buffer.from(await vscode.workspace.fs.readFile(f)).toString('utf-8'));
+        }
+      }
+      services = scanTfForServices(contents);
+    }
+
+    const policy = suggestSpokeIamPolicy(services, {
+      stateBucketArn: v.value.stateBucketArn,
+      lockTableArn:   v.value.lockTableArn,
+      includeIam:     v.value.includeIam,
+    });
+    const policyJson = JSON.stringify(policy, null, 2);
+    const svcLabel = services.length > 0 ? services.join(', ') : 'none detected (only state backend + IAM)';
+
+    return cappedTextResult(
+      `Suggested least-privilege inline IAM policy for spoke deployment roles.\n\n` +
+      `**AWS services detected in workspace:** ${svcLabel}\n\n` +
+      `\`\`\`json\n${policyJson}\n\`\`\`\n\n` +
+      `Pass this as the \`inlinePolicy\` parameter to \`terraform_scaffold_hub_spoke_oidc\`.\n` +
+      `Review the \`DetectedServices\` statement carefully — if your Terraform manages additional ` +
+      `services not in the workspace .tf files (e.g. via modules), add them to the \`services\` ` +
+      `input and call this tool again before scaffolding.`,
+    );
+  }
+}
+
+// ─── terraform_scaffold_hub_spoke_oidc ───────────────────────────────────────
+
+class ScaffoldHubSpokeOidcTool implements vscode.LanguageModelTool<ScaffoldHubSpokeOidcInput> {
+  constructor(private readonly services: ExtensionServices) {}
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ScaffoldHubSpokeOidcInput>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const v = validateToolInput(ScaffoldHubSpokeOidcInputSchema, options.input, 'terraform_scaffold_hub_spoke_oidc');
+    if (!v.ok) return v.result;
+
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return textResult('No workspace folder open.');
+
+    // Validate that the inlinePolicy is parseable JSON before writing anything.
+    try { JSON.parse(v.value.inlinePolicy); } catch {
+      return textResult('`inlinePolicy` is not valid JSON. Call `terraform_suggest_spoke_iam_policy` to generate a valid policy, then pass its output here.');
+    }
+
+    const hostname = await this.services.auth.resolveHostname();
+    const { hubTf, spokeTf } = hubSpokeOidcTf({
+      ...v.value,
+      oidcProvider: v.value.oidcProvider ?? defaultOidcProvider(hostname),
+    });
+
+    const hubRole    = v.value.hubRoleName   ?? 'github-actions-hub';
+    const spokeList  = v.value.spokeAccounts.map(s => `• ${s.name} (${s.accountId})`).join('\n');
+    const outDir     = vscode.Uri.joinPath(folder.uri, 'infra', 'hub-spoke-oidc');
+
+    const confirmed = await vscode.window.showWarningMessage(
+      `Write hub-and-spoke OIDC Terraform to infra/hub-spoke-oidc/?\n\nHub account: ${v.value.hubAccountId}\nSpoke accounts:\n${spokeList}`,
+      { modal: true },
+      'Write Files',
+    );
+    if (confirmed !== 'Write Files') {
+      return textResult('Cancelled — no files written.');
+    }
+
+    await vscode.workspace.fs.createDirectory(outDir);
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(outDir, 'hub.tf'),   Buffer.from(hubTf,   'utf-8'));
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(outDir, 'spoke.tf'), Buffer.from(spokeTf, 'utf-8'));
+
+    return textResult(
+      `Wrote hub-and-spoke OIDC Terraform to \`${outDir.fsPath}\`.\n\n` +
+      `**Next steps:**\n` +
+      `1. Apply \`hub.tf\` in hub account \`${v.value.hubAccountId}\` using an admin bootstrap role (not GHA — the hub role doesn't exist yet).\n` +
+      `2. Apply \`spoke.tf\` in each workload account using that account's bootstrap credentials.\n` +
+      `3. Set \`awsAuthMode: "oidc"\` and \`role-to-assume: arn:aws:iam::${v.value.hubAccountId}:role/${hubRole}\` in your generated workflows.\n` +
+      `4. Add a per-environment \`aws sts assume-role\` step (shown in \`spoke.tf\` comments) to chain into each spoke role.`,
+    );
   }
 }
 

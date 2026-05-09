@@ -47,7 +47,7 @@ export const RunApplyInputSchema = defineSchema<RunApplyInput>({
 
 export interface SetVariableInput {
   key: string;
-  value: string;
+  value?: string;
   sensitive: boolean;
   category?: 'terraform' | 'env';
   workspace?: string;
@@ -56,7 +56,7 @@ export interface SetVariableInput {
 
 export const SetVariableInputSchema = defineSchema<SetVariableInput>({
   type: 'object',
-  required: ['key', 'value', 'sensitive'],
+  required: ['key', 'sensitive'],
   properties: {
     key: { type: 'string', minLength: 1, pattern: '^[A-Za-z_][A-Za-z0-9_]*$' },
     value: { type: 'string' },
@@ -119,6 +119,40 @@ export const LookupProviderDocInputSchema = defineSchema<LookupProviderDocInput>
     resource: { type: 'string', minLength: 1 },
     category: { type: 'string', enum: ['resources', 'data-sources', 'guides', 'functions', 'overview'] },
     maxChars: { type: 'number', minimum: 200, maximum: 50000 },
+  },
+  additionalProperties: false,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terraform_lookup_aws_skill — read AWS agent-toolkit skills
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LookupAwsSkillInput {
+  /**
+   * Operation to perform:
+   * - `list`: return a catalog of all available AWS skill names grouped by category.
+   * - `read`: fetch a specific skill's content from the aws/agent-toolkit-for-aws repository.
+   */
+  operation: 'list' | 'read';
+  /**
+   * Kebab-case skill name, e.g. `aws-iam`, `aws-serverless`, `aws-containers`.
+   * Required for `read`. Use `list` first to discover available skills.
+   */
+  skill?: string;
+  /**
+   * Path to a file within the skill directory. Defaults to `SKILL.md` (the main skill
+   * overview). For skills with reference files, pass e.g. `references/lambda.md`.
+   */
+  file?: string;
+}
+
+export const LookupAwsSkillInputSchema = defineSchema<LookupAwsSkillInput>({
+  type: 'object',
+  required: ['operation'],
+  properties: {
+    operation: { type: 'string', enum: ['list', 'read'] },
+    skill: { type: 'string', minLength: 1, nullable: true },
+    file: { type: 'string', minLength: 1, nullable: true },
   },
   additionalProperties: false,
 });
@@ -415,6 +449,97 @@ export const DispatchCodebuildRunInputSchema = defineSchema<DispatchCodebuildRun
   properties: {
     command: { type: 'string', enum: ['plan', 'apply'] },
     workspace: { type: 'string', minLength: 1 },
+  },
+  additionalProperties: false,
+});
+
+// ── Multi-account hub-and-spoke OIDC ─────────────────────────────────────────
+
+export interface SuggestSpokeIamPolicyInput {
+  /**
+   * Explicit list of AWS IAM service prefixes to include (e.g. ["s3", "lambda", "iam"]).
+   * Omit to auto-detect from `.tf` files in the current workspace.
+   */
+  services?: string[];
+  /**
+   * Whether to include IAM permissions for managing roles/policies.
+   * Set to false only when your Terraform creates no IAM resources. Default: true.
+   */
+  includeIam?: boolean;
+  /**
+   * ARN of the S3 bucket used for Terraform state (scopes the state read/write permissions).
+   * Omit to allow state access on `*` (still S3-only, not all of AWS).
+   */
+  stateBucketArn?: string;
+  /**
+   * ARN of the DynamoDB table used for state locking.
+   * Omit to allow lock operations on `*`.
+   */
+  lockTableArn?: string;
+}
+
+export const SuggestSpokeIamPolicyInputSchema = defineSchema<SuggestSpokeIamPolicyInput>({
+  type: 'object',
+  properties: {
+    services: {
+      type: 'array',
+      items: { type: 'string', pattern: '^[a-z][a-z0-9-]*$' },
+    },
+    includeIam:     { type: 'boolean' },
+    stateBucketArn: { type: 'string', pattern: '^arn:aws[a-z-]*:s3:::' },
+    lockTableArn:   { type: 'string', pattern: '^arn:aws[a-z-]*:dynamodb:' },
+  },
+  additionalProperties: false,
+});
+
+export interface ScaffoldHubSpokeOidcInput {
+  /** 12-digit AWS account ID for the hub (CI/CD) account. */
+  hubAccountId: string;
+  /** GitHub org/owner whose Actions runners authenticate to the hub role. */
+  githubOrg: string;
+  /** Optional repo name — omit to allow any repo in the org. */
+  repo?: string;
+  /** Name for the hub IAM role. Default: `github-actions-hub`. */
+  hubRoleName?: string;
+  /** Name for each spoke deployment role. Default: `terraform-deployment`. */
+  spokeRoleName?: string;
+  /** OIDC provider host override. Default: `token.actions.githubusercontent.com`. */
+  oidcProvider?: string;
+  /** One entry per workload environment. */
+  spokeAccounts: Array<{ name: string; accountId: string }>;
+  /**
+   * Inline IAM policy JSON to attach to each spoke deployment role.
+   * Call `terraform_suggest_spoke_iam_policy` first to generate a least-privilege policy,
+   * then pass its JSON string here. Omitting this field is an error — callers must
+   * explicitly provide a policy rather than falling back to AdministratorAccess.
+   */
+  inlinePolicy: string;
+}
+
+export const ScaffoldHubSpokeOidcInputSchema = defineSchema<ScaffoldHubSpokeOidcInput>({
+  type: 'object',
+  required: ['hubAccountId', 'githubOrg', 'spokeAccounts', 'inlinePolicy'],
+  properties: {
+    hubAccountId:  { type: 'string', pattern: '^\\d{12}$' },
+    githubOrg:     { type: 'string', minLength: 1 },
+    repo:          { type: 'string', minLength: 1 },
+    hubRoleName:   { type: 'string', pattern: '^[A-Za-z0-9+=,.@_/-]{1,64}$' },
+    spokeRoleName: { type: 'string', pattern: '^[A-Za-z0-9+=,.@_/-]{1,64}$' },
+    oidcProvider:  { type: 'string', minLength: 1 },
+    spokeAccounts: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        required: ['name', 'accountId'],
+        properties: {
+          name:      { type: 'string', minLength: 1 },
+          accountId: { type: 'string', pattern: '^\\d{12}$' },
+        },
+        additionalProperties: false,
+      },
+    },
+    inlinePolicy: { type: 'string', minLength: 2 },
   },
   additionalProperties: false,
 });

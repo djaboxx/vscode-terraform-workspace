@@ -1,7 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import Database from 'better-sqlite3';
+import { createRequire } from 'module';
+
+// better-sqlite3 is a native addon. We require() it lazily inside the
+// constructor (rather than top-level `import`) so a missing or ABI-mismatched
+// build can't kill module load — if it fails, the constructor throws and the
+// activation site falls back to TerraformFileCache.createNoop().
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Database = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Statement = any;
+const nodeRequire = createRequire(__filename);
 
 /** Max bytes to store per individual .tf file */
 const FILE_CAP = 8 * 1024;
@@ -61,19 +71,49 @@ export interface TfSearchRow {
  * - `search(query)` runs an FTS5 full-text query against all cached HCL content.
  */
 export class TerraformFileCache implements vscode.Disposable {
-  private readonly db: Database.Database;
+  private readonly db: Database;
   private readonly watcher: vscode.FileSystemWatcher;
   private dirty = true;
   private cachedContext: string | null = null;
 
   // Prepared statements — created once, reused on every call
-  private readonly stmtUpsert: Database.Statement;
-  private readonly stmtDelete: Database.Statement;
-  private readonly stmtAll: Database.Statement;
-  private readonly stmtSearch: Database.Statement;
-  private readonly stmtCount: Database.Statement;
+  private readonly stmtUpsert: Statement;
+  private readonly stmtDelete: Statement;
+  private readonly stmtAll: Statement;
+  private readonly stmtSearch: Statement;
+  private readonly stmtCount: Statement;
+
+  /**
+   * Returns a no-op stand-in used when the native better-sqlite3 module fails
+   * to load (missing build, ABI mismatch, optional dep not installed).
+   * The rest of the extension keeps working; FTS5 local search and HCL
+   * context just return empty.
+   */
+  static createNoop(): TerraformFileCache {
+    const stub: Partial<TerraformFileCache> = {
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      initialize: async () => {},
+      getContext: () => null,
+      search: () => [],
+      getFile: () => undefined,
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      dispose: () => {},
+    };
+    Object.defineProperty(stub, 'size', { get: () => 0 });
+    return stub as TerraformFileCache;
+  }
 
   constructor(storagePath: string) {
+    // Lazy-require so a missing native module surfaces as a constructor
+    // failure (caught at the activation site) rather than killing bundle load.
+    let Database: new (filename: string) => Database;
+    try {
+      Database = nodeRequire('better-sqlite3');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`better-sqlite3 unavailable: ${msg}`);
+    }
+
     // Ensure the storage directory exists
     fs.mkdirSync(storagePath, { recursive: true });
 

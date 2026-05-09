@@ -53,7 +53,7 @@ coverage:
 # ── Packaging ──────────────────────────────────────────────────────────────────
 # Produces $(VSIX) in the repo root.
 package: build
-	npx --yes @vscode/vsce package --no-dependencies
+	npx --yes @vscode/vsce package
 
 # Install the locally-built VSIX into VS Code.
 install: package

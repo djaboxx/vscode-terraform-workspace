@@ -19,6 +19,7 @@ import { RunsTreeProvider, RunTreeItem } from './views/RunsTreeProvider.js';
 import { WorkspaceConfigPanel } from './views/WorkspaceConfigPanel.js';
 import { ModuleComposerPanel } from './views/ModuleComposerPanel.js';
 import { CallNotesPanel } from './views/CallNotesPanel.js';
+import { DriftPlanPanel } from './views/DriftPlanPanel.js';
 import { TerraformChatParticipant } from './chat/TerraformChatParticipant.js';
 import { DaveChatParticipant } from './chat/DaveChatParticipant.js';
 import { registerTerraformTools } from './tools/TerraformTools.js';
@@ -1261,10 +1262,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     vscode.commands.registerCommand('terraform.checkDrift', async () => {
-      const drifted = await drift.checkAll();
-      if (drifted.length === 0) {
+      const results = await drift.checkAll();
+      if (results.length === 0) {
         vscode.window.showInformationMessage('No drift detected across configured environments.');
+      } else {
+        DriftPlanPanel.show(results, context);
       }
+    }),
+
+    vscode.commands.registerCommand('terraform.showDriftDiff', (results) => {
+      DriftPlanPanel.show(results as Parameters<typeof DriftPlanPanel.show>[0], context);
     }),
 
     vscode.commands.registerCommand('terraform.openWalkthrough', () => {
